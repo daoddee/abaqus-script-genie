@@ -859,7 +859,7 @@ serve(async (req) => {
     const template = template_id && TEMPLATES[template_id] ? TEMPLATES[template_id] : null;
     const autoTemplate = !template && TEMPLATES[analysisType] ? TEMPLATES[analysisType] : template;
 
-    const MAX_ATTEMPTS = 3;
+    const MAX_ATTEMPTS = 2;
     let lastRawResponse = "";
     let allIssues: string[] = [...missingReqWarnings];
     let finalData: ScriptSchema | null = null;
@@ -873,7 +873,7 @@ serve(async (req) => {
       const systemPrompt = buildPrompt(prompt, analysisType, autoTemplate || null, options, repairContext, runtime_mode);
 
       const requestBody = {
-        model: "openai/gpt-5-mini",
+        model: "google/gemini-3-flash-preview",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: prompt },
@@ -882,14 +882,29 @@ serve(async (req) => {
 
       console.log(`Attempt ${attempt + 1}: system prompt length=${systemPrompt.length}, model=${requestBody.model}`);
 
-      const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 50000);
+      let aiResponse: Response;
+      try {
+        aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${LOVABLE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+      } catch (fetchErr) {
+        console.error(`Fetch failed (attempt ${attempt + 1}):`, fetchErr);
+        if (attempt < MAX_ATTEMPTS - 1) {
+          allIssues = ["AI request timed out, retrying..."];
+          continue;
+        }
+        throw new Error("AI request timed out after all retries");
+      } finally {
+        clearTimeout(timeout);
+      }
 
       if (!aiResponse.ok) {
         if (aiResponse.status === 429) {
@@ -1001,7 +1016,7 @@ serve(async (req) => {
           title: finalData.title,
           prompt_hash: promptHash,
           script_hash: scriptHash,
-          model: "openai/gpt-5-mini",
+          model: "google/gemini-2.5-flash",
           latency_ms: latencyMs,
           success: true,
           issues: allIssues,
@@ -1037,11 +1052,12 @@ serve(async (req) => {
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (e) {
-    console.error("generate-abaqus-script error:", e);
+    const errMsg = e instanceof Error ? e.message : String(e);
+    console.error("generate-abaqus-script error:", errMsg);
     return new Response(
       JSON.stringify({
         ok: false,
-        issues: ["Internal server error. Please try again."],
+        issues: [errMsg.includes("timed out") ? "AI request timed out. Please try again." : "Internal server error. Please try again."],
         trace_id: traceId,
       }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
