@@ -14,9 +14,9 @@ interface SubscriptionState {
 // Map Stripe product IDs to tier names
 export const PLAN_TIERS = {
   starter: {
-    productId: "prod_U0gX7ZIQhqDxn2",
-    priceId: "price_1T2fABAqi6NuZJQwEe4dRx1b",
-    name: "Starter",
+    productId: "prod_U0gU0kYENhErbL",
+    priceId: "price_1T2f7FAqi6NuZJQwHSudP42z",
+    name: "Standard",
     priceNow: 19,
     priceWas: 29,
     features: [
@@ -27,8 +27,8 @@ export const PLAN_TIERS = {
     ],
   },
   pro: {
-    productId: "prod_U0gXcpmXek1vlt",
-    priceId: "price_1T2fAOAqi6NuZJQwXluIJAJf",
+    productId: "prod_U0gV9KIZT1q4ZY",
+    priceId: "price_1T2f8KAqi6NuZJQweW4tlP6D",
     name: "Pro",
     priceNow: 39,
     priceWas: 59,
@@ -42,8 +42,8 @@ export const PLAN_TIERS = {
     ],
   },
   team: {
-    productId: "prod_U0gXPiDXf1fQ5z",
-    priceId: "price_1T2fAZAqi6NuZJQwdjzdQvXW",
+    productId: "prod_U0gVOJgadWFfbp",
+    priceId: "price_1T2f8UAqi6NuZJQwXfLNeMpB",
     name: "Team",
     priceNow: 99,
     priceWas: 129,
