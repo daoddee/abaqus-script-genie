@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from "react";
+import logo from "@/assets/logo.png";
 import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal, Send, Bug, CreditCard } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import ChatPanel from "../components/ChatPanel";
@@ -67,9 +68,7 @@ const Index = () => {
         <div className="w-64 border-r border-border flex flex-col bg-card shrink-0">
           <div className="flex items-center justify-between px-3 py-3 border-b border-border">
             <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded border border-primary/30 flex items-center justify-center glow-primary-sm">
-                <span className="text-primary font-mono text-xs font-bold">Aq</span>
-              </div>
+              <img src={logo} alt="Abaqus AI" className="w-7 h-7 rounded" />
               <span className="text-sm font-semibold text-foreground">Abaqus AI</span>
             </div>
             <button
