@@ -2,3 +2,6 @@ project_id = "vfcfkcpnrgdfgkvnyyvd"
 
 [functions.generate-abaqus-script]
 verify_jwt = false
+
+[functions.debug-abaqus-script]
+verify_jwt = false

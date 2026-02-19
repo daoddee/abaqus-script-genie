@@ -151,7 +151,7 @@ const Index = () => {
             )}
           </div>
           <div className="flex-1 overflow-hidden">
-            <ScriptPreview script={script} archivedScripts={archivedScripts} />
+            <ScriptPreview script={script} archivedScripts={archivedScripts} onScriptUpdate={setScript} />
           </div>
         </div>
       </div>
