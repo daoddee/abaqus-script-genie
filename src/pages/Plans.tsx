@@ -1,4 +1,5 @@
 import { useState } from "react";
+import logo from "@/assets/logo.png";
 import { useNavigate } from "react-router-dom";
 import { Check, Sparkles, ArrowLeft, Loader2, Crown } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -65,9 +66,7 @@ const Plans = () => {
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <div className="w-7 h-7 rounded border border-primary/30 flex items-center justify-center">
-            <span className="text-primary font-mono text-xs font-bold">Aq</span>
-          </div>
+          <img src={logo} alt="Abaqus AI" className="w-7 h-7 rounded" />
           <span className="text-sm font-semibold text-foreground">Abaqus AI</span>
           {subscribed && (
             <button
