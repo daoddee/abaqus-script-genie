@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Copy, Download, Check, Play, FileCode2, FileCode, ChevronRight } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "./ui/collapsible";
 // @ts-ignore
@@ -19,6 +19,43 @@ interface ScriptPreviewProps {
 
 const ScriptPreview = ({ script, archivedScripts = [] }: ScriptPreviewProps) => {
   const [copied, setCopied] = useState(false);
+  const [displayedScript, setDisplayedScript] = useState("");
+  const [isStreaming, setIsStreaming] = useState(false);
+  const prevScriptRef = useRef("");
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (script === prevScriptRef.current) return;
+    prevScriptRef.current = script;
+
+    if (!script) {
+      setDisplayedScript("");
+      setIsStreaming(false);
+      return;
+    }
+
+    const lines = script.split("\n");
+    let currentLine = 0;
+    setDisplayedScript("");
+    setIsStreaming(true);
+
+    const interval = setInterval(() => {
+      currentLine++;
+      setDisplayedScript(lines.slice(0, currentLine).join("\n"));
+      
+      // Auto-scroll to bottom during streaming
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+      }
+
+      if (currentLine >= lines.length) {
+        clearInterval(interval);
+        setIsStreaming(false);
+      }
+    }, 25);
+
+    return () => clearInterval(interval);
+  }, [script]);
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(script);
@@ -37,6 +74,7 @@ const ScriptPreview = ({ script, archivedScripts = [] }: ScriptPreviewProps) => 
   };
 
   const lineCount = script ? script.split("\n").length : 0;
+  const displayedLineCount = displayedScript ? displayedScript.split("\n").length : 0;
 
   if (!script) {
     return (
@@ -96,7 +134,14 @@ const ScriptPreview = ({ script, archivedScripts = [] }: ScriptPreviewProps) => 
         <div className="flex items-center gap-2">
           <FileCode2 className="w-4 h-4 text-primary" />
           <span className="text-xs font-mono text-muted-foreground">abaqus_script.py</span>
-          <span className="text-xs text-muted-foreground/60">· {lineCount} lines</span>
+          <span className="text-xs text-muted-foreground/60">
+            · {isStreaming ? `${displayedLineCount}/${lineCount} lines` : `${lineCount} lines`}
+          </span>
+          {isStreaming && (
+            <span className="ml-1 px-1.5 py-0.5 text-[10px] font-mono rounded bg-primary/15 text-primary border border-primary/20 animate-pulse">
+              streaming
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -121,7 +166,7 @@ const ScriptPreview = ({ script, archivedScripts = [] }: ScriptPreviewProps) => 
       </div>
 
       {/* Code */}
-      <div className="flex-1 overflow-auto scrollbar-thin">
+      <div ref={scrollContainerRef} className="flex-1 overflow-auto scrollbar-thin">
         <SyntaxHighlighter
           language="python"
           style={vscDarkPlus}
@@ -139,7 +184,7 @@ const ScriptPreview = ({ script, archivedScripts = [] }: ScriptPreviewProps) => 
             minWidth: "40px",
           }}
         >
-          {script}
+          {displayedScript || " "}
         </SyntaxHighlighter>
       </div>
     </div>
