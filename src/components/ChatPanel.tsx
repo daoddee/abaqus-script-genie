@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Send, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 
 interface Message {
   id: string;
@@ -12,65 +13,19 @@ interface ChatPanelProps {
   onScriptGenerated: (script: string, prompt?: string) => void;
 }
 
-const DEMO_SCRIPTS: Record<string, string> = {
-  cantilever: `# Abaqus Python Script - Cantilever Beam Analysis
-from abaqus import *
-from abaqusConstants import *
-from caeModules import *
-
-# Create Model
-myModel = mdb.Model(name='CantileverBeam')
-
-# Create Part - 2D Beam
-mySketch = myModel.ConstrainedSketch(name='beamSketch', sheetSize=200.0)
-mySketch.rectangle(point1=(0.0, 0.0), point2=(100.0, 10.0))
-myPart = myModel.Part(name='Beam', dimensionality=TWO_D_PLANAR, type=DEFORMABLE_BODY)
-myPart.BaseShell(sketch=mySketch)
-
-# Define Material
-myMaterial = myModel.Material(name='Steel')
-myMaterial.Elastic(table=((210000.0, 0.3),))
-myMaterial.Density(table=((7.85e-09,),))
-
-# Create Section
-myModel.HomogeneousSolidSection(name='BeamSection', material='Steel', thickness=1.0)
-
-# Assign Section
-region = myPart.Set(faces=myPart.faces, name='AllBeam')
-myPart.SectionAssignment(region=region, sectionName='BeamSection')
-
-# Assembly
-myAssembly = myModel.rootAssembly
-myInstance = myAssembly.Instance(name='BeamInstance', part=myPart, dependent=ON)
-
-# Step
-myModel.StaticStep(name='LoadStep', previous='Initial', nlgeom=OFF)
-
-# Boundary Condition - Fixed left end
-leftEdge = myInstance.edges.findAt(((0.0, 5.0, 0.0),))
-leftRegion = myAssembly.Set(edges=leftEdge, name='FixedEnd')
-myModel.DisplacementBC(name='Fixed', createStepName='LoadStep',
-    region=leftRegion, u1=0.0, u2=0.0, ur3=0.0)
-
-# Load - Pressure on top edge
-topEdge = myInstance.edges.findAt(((50.0, 10.0, 0.0),))
-topSurface = myAssembly.Surface(side1Edges=topEdge, name='TopSurface')
-myModel.Pressure(name='TopLoad', createStepName='LoadStep',
-    region=topSurface, magnitude=1.0)
-
-# Mesh
-myPart.seedPart(size=2.0)
-myPart.generateMesh()
-
-# Job
-mdb.Job(name='CantileverJob', model='CantileverBeam', type=ANALYSIS)
-print("Script generated successfully - Cantilever Beam model ready.")`,
-};
+const STREAM_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-abaqus-script`;
 
 const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, isGenerating]);
 
   const handleSend = async () => {
     if (!input.trim() || isGenerating) return;
@@ -87,25 +42,108 @@ const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
     setInput("");
     setIsGenerating(true);
 
-    // Simulate AI response
-    setTimeout(() => {
-      const script = DEMO_SCRIPTS.cantilever;
+    let fullScript = "";
+
+    try {
+      const resp = await fetch(STREAM_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ prompt: userPrompt }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: "Request failed" }));
+        throw new Error(err.error || `Error ${resp.status}`);
+      }
+
+      if (!resp.body) throw new Error("No response stream");
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let newlineIdx: number;
+        while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+          let line = buffer.slice(0, newlineIdx);
+          buffer = buffer.slice(newlineIdx + 1);
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+          if (!line.startsWith("data: ")) continue;
+          const jsonStr = line.slice(6).trim();
+          if (jsonStr === "[DONE]") break;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (content) {
+              fullScript += content;
+              // Update script preview in real time
+              onScriptGenerated(fullScript, userPrompt);
+            }
+          } catch {
+            buffer = line + "\n" + buffer;
+            break;
+          }
+        }
+      }
+
+      // Flush remaining buffer
+      if (buffer.trim()) {
+        for (let raw of buffer.split("\n")) {
+          if (!raw) continue;
+          if (raw.endsWith("\r")) raw = raw.slice(0, -1);
+          if (!raw.startsWith("data: ")) continue;
+          const jsonStr = raw.slice(6).trim();
+          if (jsonStr === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (content) {
+              fullScript += content;
+            }
+          } catch { /* ignore */ }
+        }
+      }
+
+      // Clean up: remove markdown fences if AI wrapped the code
+      fullScript = fullScript.replace(/^```python\n?/i, "").replace(/\n?```$/i, "").trim();
+
+      // Final update with cleaned script
+      onScriptGenerated(fullScript, userPrompt);
+
       const assistantMsg: Message = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: `I've generated a **Cantilever Beam Analysis** script for you. The model includes:\n\n• 2D planar beam (100×10 mm)\n• Steel material (E=210 GPa, ν=0.3)\n• Fixed left end boundary condition\n• Pressure load on top surface\n• Quad mesh with 2mm seed size\n\nThe script is ready in the preview panel. Review it before execution.`,
+        content: `Script generated successfully. Check the preview panel to review and run it.`,
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, assistantMsg]);
-      onScriptGenerated(script, userPrompt);
+    } catch (e) {
+      console.error("AI generation error:", e);
+      const errorMsg = e instanceof Error ? e.message : "Unknown error";
+      toast.error(errorMsg);
+      const errAssistant: Message = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: `Failed to generate script: ${errorMsg}`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errAssistant]);
+    } finally {
       setIsGenerating(false);
-    }, 1500);
+    }
   };
 
   return (
     <div className="flex flex-col h-full">
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground space-y-3">
             <div className="w-12 h-12 rounded-lg border border-primary/30 flex items-center justify-center glow-primary-sm">

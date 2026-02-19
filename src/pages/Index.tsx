@@ -14,6 +14,7 @@ const Index = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("templates");
   const scriptNameRef = useRef("abaqus_script.py");
+  const activePromptRef = useRef<string | null>(null);
   const chatRef = useRef<{ setInput: (val: string) => void } | null>(null);
 
   const generateScriptName = (prompt: string): string => {
@@ -24,10 +25,16 @@ const Index = () => {
   };
 
   const handleScriptGenerated = useCallback((newScript: string, prompt?: string) => {
-    if (script) {
-      setArchivedScripts(prev => [...prev, { name: scriptNameRef.current, content: script }]);
+    // If this is a NEW prompt (different from active), archive old script first
+    if (prompt && prompt !== activePromptRef.current) {
+      if (script && activePromptRef.current) {
+        const archiveName = scriptNameRef.current;
+        const archiveContent = script;
+        setArchivedScripts(prev => [...prev, { name: archiveName, content: archiveContent }]);
+      }
+      scriptNameRef.current = generateScriptName(prompt);
+      activePromptRef.current = prompt;
     }
-    scriptNameRef.current = prompt ? generateScriptName(prompt) : "abaqus_script.py";
     setScript(newScript);
   }, [script]);
 
