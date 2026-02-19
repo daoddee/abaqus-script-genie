@@ -859,31 +859,32 @@ serve(async (req) => {
     const template = template_id && TEMPLATES[template_id] ? TEMPLATES[template_id] : null;
     const autoTemplate = !template && TEMPLATES[analysisType] ? TEMPLATES[analysisType] : template;
 
-    const MAX_ATTEMPTS = 2;
+    const MODEL_CHAIN = ["google/gemini-2.5-flash", "openai/gpt-5-mini", "google/gemini-2.5-flash-lite"];
     let lastRawResponse = "";
     let allIssues: string[] = [...missingReqWarnings];
     let finalData: ScriptSchema | null = null;
 
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    for (let modelIdx = 0; modelIdx < MODEL_CHAIN.length; modelIdx++) {
+      const model = MODEL_CHAIN[modelIdx];
       const repairContext =
-        attempt > 0
+        modelIdx > 0
           ? { previousIssues: allIssues.filter((i) => !i.startsWith("INFO:")), previousResponse: lastRawResponse }
           : undefined;
 
       const systemPrompt = buildPrompt(prompt, analysisType, autoTemplate || null, options, repairContext, runtime_mode);
 
       const requestBody = {
-        model: "google/gemini-3-flash-preview",
+        model,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: prompt },
         ],
       };
 
-      console.log(`Attempt ${attempt + 1}: system prompt length=${systemPrompt.length}, model=${requestBody.model}`);
+      console.log(`Attempt ${modelIdx + 1}/${MODEL_CHAIN.length}: model=${model}, prompt_len=${systemPrompt.length}`);
 
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 50000);
+      const timeout = setTimeout(() => controller.abort(), 45000);
       let aiResponse: Response;
       try {
         aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -896,12 +897,12 @@ serve(async (req) => {
           signal: controller.signal,
         });
       } catch (fetchErr) {
-        console.error(`Fetch failed (attempt ${attempt + 1}):`, fetchErr);
-        if (attempt < MAX_ATTEMPTS - 1) {
-          allIssues = ["AI request timed out, retrying..."];
+        console.error(`Fetch failed (model=${model}):`, fetchErr);
+        if (modelIdx < MODEL_CHAIN.length - 1) {
+          allIssues = [`Model ${model} timed out, trying next...`];
           continue;
         }
-        throw new Error("AI request timed out after all retries");
+        throw new Error("AI request failed after trying all models");
       } finally {
         clearTimeout(timeout);
       }
@@ -920,14 +921,12 @@ serve(async (req) => {
           );
         }
         const errText = await aiResponse.text();
-        console.error(`AI gateway error (attempt ${attempt + 1}):`, aiResponse.status, errText);
-        // Retry on transient errors instead of throwing immediately
-        if (attempt < MAX_ATTEMPTS - 1) {
-          allIssues = [`AI gateway returned ${aiResponse.status}, retrying...`];
-          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1))); // backoff
+        console.error(`AI gateway error (model=${model}):`, aiResponse.status, errText);
+        if (modelIdx < MODEL_CHAIN.length - 1) {
+          allIssues = [`Model ${model} returned ${aiResponse.status}, trying next...`];
           continue;
         }
-        throw new Error("AI generation failed after all retries");
+        throw new Error("AI generation failed after trying all models");
       }
 
       const aiData = await aiResponse.json();
@@ -942,7 +941,7 @@ serve(async (req) => {
         parsed = JSON.parse(cleaned);
       } catch {
         allIssues = ["Failed to parse AI response as JSON. Retrying..."];
-        console.error(`JSON parse failed (attempt ${attempt + 1}):`, cleaned.substring(0, 500));
+        console.error(`JSON parse failed (model=${model}):`, cleaned.substring(0, 500));
         continue;
       }
 
@@ -953,13 +952,8 @@ serve(async (req) => {
       }
 
       const lintIssues = lintScript(validation.data.script);
-      const blockingIssues = lintIssues.filter((i) => !i.startsWith("INFO:") && !i.startsWith("SELECTION:") && !i.startsWith("BUILD ORDER:"));
 
-      if (blockingIssues.length > 0 && attempt < MAX_ATTEMPTS - 1) {
-        allIssues = lintIssues;
-        console.log(`Lint failed (attempt ${attempt + 1}), ${blockingIssues.length} blocking issues. Retrying...`);
-        continue;
-      }
+      // Accept the script — lint issues are returned as warnings, not blockers
 
       finalData = validation.data;
       allIssues = [...missingReqWarnings, ...lintIssues];
@@ -1016,7 +1010,7 @@ serve(async (req) => {
           title: finalData.title,
           prompt_hash: promptHash,
           script_hash: scriptHash,
-          model: "google/gemini-2.5-flash",
+          model: MODEL_CHAIN[0],
           latency_ms: latencyMs,
           success: true,
           issues: allIssues,
