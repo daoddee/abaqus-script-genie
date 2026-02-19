@@ -903,7 +903,13 @@ serve(async (req) => {
         }
         const errText = await aiResponse.text();
         console.error(`AI gateway error (attempt ${attempt + 1}):`, aiResponse.status, errText);
-        throw new Error("AI generation failed");
+        // Retry on transient errors instead of throwing immediately
+        if (attempt < MAX_ATTEMPTS - 1) {
+          allIssues = [`AI gateway returned ${aiResponse.status}, retrying...`];
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1))); // backoff
+          continue;
+        }
+        throw new Error("AI generation failed after all retries");
       }
 
       const aiData = await aiResponse.json();
