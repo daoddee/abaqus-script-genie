@@ -1,15 +1,22 @@
 import { useState } from "react";
-import { Copy, Download, Check, Play, FileCode2 } from "lucide-react";
+import { Copy, Download, Check, Play, FileCode2, FileCode, ChevronRight } from "lucide-react";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "./ui/collapsible";
 // @ts-ignore
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 // @ts-ignore
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-interface ScriptPreviewProps {
-  script: string;
+export interface ArchivedScript {
+  name: string;
+  content: string;
 }
 
-const ScriptPreview = ({ script }: ScriptPreviewProps) => {
+interface ScriptPreviewProps {
+  script: string;
+  archivedScripts?: ArchivedScript[];
+}
+
+const ScriptPreview = ({ script, archivedScripts = [] }: ScriptPreviewProps) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -44,16 +51,51 @@ const ScriptPreview = ({ script }: ScriptPreviewProps) => {
 
   return (
     <div className="flex flex-col h-full">
+      {/* Archived scripts */}
+      {archivedScripts.length > 0 && (
+        <div className="px-3 pt-3 space-y-1.5">
+          {archivedScripts.map((file, i) => (
+            <Collapsible key={i}>
+              <CollapsibleTrigger className="flex items-center gap-2 w-full px-3 py-2 rounded-lg bg-muted/60 border border-border hover:bg-muted transition-colors group text-left">
+                <FileCode className="w-4 h-4 text-primary shrink-0" />
+                <span className="text-xs font-mono text-foreground truncate flex-1">{file.name}</span>
+                <span className="text-[10px] text-muted-foreground mr-1">{file.content.split("\n").length} lines</span>
+                <ChevronRight className="w-3.5 h-3.5 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="mt-1 max-h-48 overflow-auto rounded-md border border-border scrollbar-thin">
+                  <SyntaxHighlighter
+                    language="python"
+                    style={vscDarkPlus}
+                    showLineNumbers
+                    customStyle={{
+                      margin: 0,
+                      padding: "8px",
+                      background: "transparent",
+                      fontSize: "11px",
+                      lineHeight: "1.5",
+                    }}
+                    lineNumberStyle={{
+                      color: "hsl(215 15% 35%)",
+                      paddingRight: "12px",
+                      minWidth: "32px",
+                    }}
+                  >
+                    {file.content}
+                  </SyntaxHighlighter>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          ))}
+        </div>
+      )}
+
       {/* Toolbar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
         <div className="flex items-center gap-2">
           <FileCode2 className="w-4 h-4 text-primary" />
-          <span className="text-xs font-mono text-muted-foreground">
-            abaqus_script.py
-          </span>
-          <span className="text-xs text-muted-foreground/60">
-            · {lineCount} lines
-          </span>
+          <span className="text-xs font-mono text-muted-foreground">abaqus_script.py</span>
+          <span className="text-xs text-muted-foreground/60">· {lineCount} lines</span>
         </div>
         <div className="flex items-center gap-1">
           <button

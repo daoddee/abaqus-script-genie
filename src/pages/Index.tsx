@@ -1,7 +1,8 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal } from "lucide-react";
 import ChatPanel from "../components/ChatPanel";
 import ScriptPreview from "../components/ScriptPreview";
+import type { ArchivedScript } from "../components/ScriptPreview";
 import TemplatePanel from "../components/TemplatePanel";
 import HistorySidebar from "../components/HistorySidebar";
 
@@ -9,9 +10,26 @@ type SidebarTab = "templates" | "history";
 
 const Index = () => {
   const [script, setScript] = useState("");
+  const [archivedScripts, setArchivedScripts] = useState<ArchivedScript[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("templates");
+  const scriptNameRef = useRef("abaqus_script.py");
   const chatRef = useRef<{ setInput: (val: string) => void } | null>(null);
+
+  const generateScriptName = (prompt: string): string => {
+    const words = prompt.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
+    const meaningful = words.filter(w => !["a", "the", "an", "with", "and", "or", "create", "make", "build", "generate", "model", "please"].includes(w));
+    const name = meaningful.slice(0, 3).join("_") || "script";
+    return `${name}.py`;
+  };
+
+  const handleScriptGenerated = useCallback((newScript: string, prompt?: string) => {
+    if (script) {
+      setArchivedScripts(prev => [...prev, { name: scriptNameRef.current, content: script }]);
+    }
+    scriptNameRef.current = prompt ? generateScriptName(prompt) : "abaqus_script.py";
+    setScript(newScript);
+  }, [script]);
 
   const handleTemplateSelect = (prompt: string) => {
     // We'll use a simple approach: set the input via a callback
@@ -112,7 +130,7 @@ const Index = () => {
             <h2 className="text-sm font-semibold text-foreground">Prompt</h2>
             <span className="text-xs text-muted-foreground ml-auto font-mono">v0.1</span>
           </div>
-          <ChatPanel onScriptGenerated={setScript} />
+          <ChatPanel onScriptGenerated={handleScriptGenerated} />
         </div>
 
         {/* Script preview */}
@@ -126,7 +144,7 @@ const Index = () => {
             )}
           </div>
           <div className="flex-1 overflow-hidden">
-            <ScriptPreview script={script} />
+            <ScriptPreview script={script} archivedScripts={archivedScripts} />
           </div>
         </div>
       </div>

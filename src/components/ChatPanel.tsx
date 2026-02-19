@@ -1,17 +1,15 @@
-import { useState, useRef } from "react";
-import { Send, Loader2, FileCode, ChevronRight } from "lucide-react";
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "./ui/collapsible";
+import { useState } from "react";
+import { Send, Loader2 } from "lucide-react";
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
-  scriptFile?: { name: string; content: string };
 }
 
 interface ChatPanelProps {
-  onScriptGenerated: (script: string) => void;
+  onScriptGenerated: (script: string, prompt?: string) => void;
 }
 
 const DEMO_SCRIPTS: Record<string, string> = {
@@ -73,48 +71,25 @@ const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
-  const currentScriptRef = useRef<{ name: string; content: string } | null>(null);
-
-  const generateScriptName = (prompt: string): string => {
-    const words = prompt.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
-    const meaningful = words.filter(w => !["a", "the", "an", "with", "and", "or", "create", "make", "build", "generate", "model", "please"].includes(w));
-    const name = meaningful.slice(0, 3).join("_") || "script";
-    return `${name}.py`;
-  };
 
   const handleSend = async () => {
     if (!input.trim() || isGenerating) return;
 
+    const userPrompt = input;
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
-      content: input,
+      content: userPrompt,
       timestamp: new Date(),
     };
 
-    // If there's a previous script, fold it into a file message
-    const newMessages: Message[] = [];
-    if (currentScriptRef.current) {
-      newMessages.push({
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: "",
-        timestamp: new Date(),
-        scriptFile: { ...currentScriptRef.current },
-      });
-    }
-    newMessages.push(userMsg);
-
-    setMessages((prev) => [...prev, ...newMessages]);
+    setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsGenerating(true);
 
     // Simulate AI response
     setTimeout(() => {
       const script = DEMO_SCRIPTS.cantilever;
-      const scriptName = generateScriptName(input);
-      currentScriptRef.current = { name: scriptName, content: script };
-
       const assistantMsg: Message = {
         id: crypto.randomUUID(),
         role: "assistant",
@@ -122,7 +97,7 @@ const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, assistantMsg]);
-      onScriptGenerated(script);
+      onScriptGenerated(script, userPrompt);
       setIsGenerating(false);
     }, 1500);
   };
@@ -149,40 +124,25 @@ const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
               msg.role === "user" ? "flex justify-end" : ""
             }`}
           >
-            {msg.scriptFile ? (
-              <Collapsible className="w-full">
-                <CollapsibleTrigger className="flex items-center gap-2 w-full px-3 py-2 rounded-lg bg-muted/60 border border-border hover:bg-muted transition-colors group text-left">
-                  <FileCode className="w-4 h-4 text-primary shrink-0" />
-                  <span className="text-xs font-mono text-foreground truncate flex-1">{msg.scriptFile.name}</span>
-                  <ChevronRight className="w-3.5 h-3.5 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-muted/40 border border-border p-2 text-[11px] font-mono text-muted-foreground scrollbar-thin">
-                    {msg.scriptFile.content}
-                  </pre>
-                </CollapsibleContent>
-              </Collapsible>
-            ) : (
-              <div
-                className={`max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
-                  msg.role === "user"
-                    ? "bg-primary/15 border border-primary/20 text-foreground"
-                    : "bg-secondary text-secondary-foreground"
-                }`}
-              >
-                {msg.content.split("\n").map((line, i) => (
-                  <p key={i} className={i > 0 ? "mt-1" : ""}>
-                    {line.startsWith("•") ? (
-                      <span className="text-primary">{line}</span>
-                    ) : line.startsWith("**") ? (
-                      <strong>{line.replace(/\*\*/g, "")}</strong>
-                    ) : (
-                      line
-                    )}
-                  </p>
-                ))}
-              </div>
-            )}
+            <div
+              className={`max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
+                msg.role === "user"
+                  ? "bg-primary/15 border border-primary/20 text-foreground"
+                  : "bg-secondary text-secondary-foreground"
+              }`}
+            >
+              {msg.content.split("\n").map((line, i) => (
+                <p key={i} className={i > 0 ? "mt-1" : ""}>
+                  {line.startsWith("•") ? (
+                    <span className="text-primary">{line}</span>
+                  ) : line.startsWith("**") ? (
+                    <strong>{line.replace(/\*\*/g, "")}</strong>
+                  ) : (
+                    line
+                  )}
+                </p>
+              ))}
+            </div>
           </div>
         ))}
         {isGenerating && (
