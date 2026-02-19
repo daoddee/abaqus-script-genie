@@ -9,6 +9,7 @@ import DebugPanel from "../components/DebugPanel";
 
 type SidebarTab = "templates" | "history";
 type MiddleTab = "prompt" | "debug";
+type RuntimeMode = "py3" | "py27";
 
 const Index = () => {
   const [script, setScript] = useState("");
@@ -16,6 +17,7 @@ const Index = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("templates");
   const [middleTab, setMiddleTab] = useState<MiddleTab>("prompt");
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("py3");
   const scriptNameRef = useRef("abaqus_script.py");
   const activePromptRef = useRef<string | null>(null);
   const chatRef = useRef<{ setInput: (val: string) => void } | null>(null);
@@ -109,10 +111,23 @@ const Index = () => {
             )}
           </div>
 
-          <div className="p-3 border-t border-border">
+          <div className="p-3 border-t border-border space-y-2">
+            <button
+              onClick={() => setRuntimeMode(runtimeMode === "py3" ? "py27" : "py3")}
+              className="flex items-center justify-between w-full px-2 py-1.5 rounded-md bg-muted/60 border border-border hover:bg-muted transition-colors"
+            >
+              <span className="text-xs text-muted-foreground">Runtime</span>
+              <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                runtimeMode === "py3"
+                  ? "bg-primary/15 text-primary border border-primary/20"
+                  : "bg-amber-500/15 text-amber-400 border border-amber-500/20"
+              }`}>
+                {runtimeMode === "py3" ? "Python 3.x" : "Python 2.7"}
+              </span>
+            </button>
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Terminal className="w-3.5 h-3.5" />
-              <span>Abaqus 2024 detected</span>
+              <span>Abaqus {runtimeMode === "py3" ? "2020+" : "≤2019"} detected</span>
               <span className="ml-auto w-2 h-2 rounded-full bg-success animate-pulse-glow" />
             </div>
           </div>
@@ -160,7 +175,7 @@ const Index = () => {
             <span className="text-xs text-muted-foreground ml-auto font-mono">v0.1</span>
           </div>
           {middleTab === "prompt" ? (
-            <ChatPanel onScriptGenerated={handleScriptGenerated} />
+            <ChatPanel onScriptGenerated={handleScriptGenerated} runtimeMode={runtimeMode} />
           ) : (
             <DebugPanel script={script} onApplyFix={setScript} />
           )}

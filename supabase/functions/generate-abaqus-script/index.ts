@@ -157,6 +157,16 @@ const BANNED_API_PATTERNS: { pattern: RegExp; message: string; fix: string }[] =
     message: "Multiple 'from abaqus import *' detected — likely concatenated scripts",
     fix: "Output exactly ONE script per response. Remove duplicate import blocks.",
   },
+  {
+    pattern: /frictionCoefficient\s*=/,
+    message: "frictionCoefficient= keyword is version-sensitive and may fail",
+    fix: "Use table=((mu,),) inside TangentialBehavior for cross-version compatibility.",
+  },
+  {
+    pattern: /setElementType\s*\(\s*regions?\s*=\s*(?:CELLS_REGION|cells_region|regionToolset\.Region)/,
+    message: "setElementType regions argument must be tuple-wrapped cells, not a Region object",
+    fix: "Use: part.setElementType(regions=(part.cells[:],), elemTypes=(elemType,))",
+  },
 ];
 
 // ── Build order enforcement ──
@@ -249,14 +259,38 @@ function checkRegionTypes(script: string): string[] {
     }
   }
 
-  // setElementType region check
+  // setElementType: must use (part.cells[:],) not Region or CELLS_REGION
   if (/setElementType\s*\(/.test(script)) {
-    if (/setElementType\s*\(\s*regions?\s*=\s*\(\s*\w+\.cells/.test(script) &&
-        !/setElementType\s*\(\s*regions?\s*=\s*\(\s*\w+\.cells[^)]*\)/.test(script)) {
+    // Flag if using Region() or CELLS_REGION() inside setElementType
+    if (/setElementType\s*\([^)]*(?:CELLS_REGION|regionToolset\.Region|Region\s*\(\s*cells)/.test(script)) {
       issues.push(
-        `REGION: setElementType regions must be a Region(cells=...), not a raw tuple.`
+        `REGION: setElementType regions must be tuple-wrapped cells: regions=(part.cells[:],). Do NOT use Region() or CELLS_REGION().`
       );
     }
+    // Also flag if cells are not tuple-wrapped
+    if (/setElementType\s*\(\s*regions?\s*=\s*\w+\.cells\b(?!\s*\[\s*:\s*\])/.test(script)) {
+      issues.push(
+        `REGION: setElementType regions must slice cells: regions=(part.cells[:],) — missing [:] slice.`
+      );
+    }
+  }
+
+  return issues;
+}
+
+// ── Contact engagement safeguard ──
+function checkContactEngagement(script: string): string[] {
+  const issues: string[] = [];
+
+  const hasFriction = /TangentialBehavior|friction/i.test(script);
+  const hasShearLoad = /SurfaceTraction|ShellEdgeLoad|shear/i.test(script);
+  const hasNormalPreload = /STEP_CLAMP|interference|preload|gravity|Gravity|normal.*force|clamp/i.test(script);
+  const hasContactInteraction = /SurfaceToSurfaceContactStd|SurfaceToSurfaceContactExp|ContactStd|ContactExp/i.test(script);
+
+  if (hasFriction && hasContactInteraction && hasShearLoad && !hasNormalPreload) {
+    issues.push(
+      "CONTACT: Friction contact + shear load detected with no normal preload. Add a STEP_CLAMP with a small normal force before STEP_SHEAR to ensure contact engagement."
+    );
   }
 
   return issues;
@@ -459,6 +493,9 @@ function lintScript(script: string): string[] {
   // Region types
   issues.push(...checkRegionTypes(script));
 
+  // Contact engagement
+  issues.push(...checkContactEngagement(script));
+
   // Naming conventions
   issues.push(...checkNamingConventions(script));
 
@@ -523,7 +560,8 @@ function buildPrompt(
   analysisType: string,
   template: string | null,
   options: Record<string, string>,
-  repairContext?: { previousIssues: string[]; previousResponse: string }
+  repairContext?: { previousIssues: string[]; previousResponse: string },
+  runtimeMode: string = "py3"
 ): string {
   const parts: string[] = [];
 
@@ -612,14 +650,22 @@ Jobs:        JOB_<MODEL>_<TEST>
 ═══ COMMON PITFALLS TO AVOID ═══
 - NEVER use referencePoints.keys()[index] — ordering is unstable
 - NEVER pass raw RP objects to Coupling controlPoint — must be Region(referencePoints=...)
-- NEVER use setElementType with raw tuple — must be Region(cells=...)
+- NEVER use setElementType with Region() or CELLS_REGION() — use: part.setElementType(regions=(part.cells[:],), elemTypes=(elemType,))
 - NEVER use model.BoundaryCondition() — use specific types: EncastreBC, DisplacementBC, XsymmBC, etc.
 - NEVER use influenceRegion=EVERYWHERE — use influenceRadius=WHOLE_SURFACE
+- NEVER use frictionCoefficient= in TangentialBehavior — use table=((mu,),) instead for cross-version compatibility
 - NEVER output more than ONE script per response — if you see a second 'from abaqus import *' mid-file, you are concatenating scripts
 - ALWAYS create sets/surfaces BEFORE referencing them in BCs/loads
 - ALWAYS validate mesh: assert len(p.elements) > 0 after generateMesh()
 - ALWAYS import mesh module if using mesh.ElemType: import mesh
 - ALWAYS use seedPart() for global mesh size; seedEdgeBySize() ONLY for local refinement zones
+
+═══ CONTACT ENGAGEMENT RULE ═══
+If the model has friction contact + shear load, ALWAYS add a pre-engagement step:
+1. STEP_CLAMP: Apply a small normal force/displacement to ensure contact surfaces engage
+2. STEP_SHEAR: Then apply the shear load
+Without normal preload, friction is numerically ill-posed (no contact pressure → no tangential resistance).
+Exception: If the user explicitly requests no preload or uses interference fit / gravity.
 
 ═══ ANTI-DEFAULT RULE ═══
 If the user prompt does NOT specify a value for any of the following, you MUST NOT invent a default.
@@ -652,10 +698,14 @@ def SURF(assembly, name):
     return assembly.surfaces[name]
 
 def CELLS_REGION(part):
+    """For setElementType, use (part.cells[:],) directly instead of this helper."""
     import regionToolset
     cells = part.cells[:]
     REQUIRE(len(cells) > 0, 'No cells in part %s' % part.name)
     return regionToolset.Region(cells=cells)
+
+NOTE: For setElementType, do NOT use CELLS_REGION(). Instead use:
+  part.setElementType(regions=(part.cells[:],), elemTypes=(elemType,))
 
 ═══ MANDATORY RUNTIME SAFEGUARDS ═══
 
@@ -736,6 +786,24 @@ Respond with valid JSON only. No markdown. No code fences. Just a JSON object:
     parts.push(`ELEMENT FAMILY PREFERENCE: ${options.element_family}`);
   }
 
+  // Python runtime mode
+  if (runtimeMode === "py27") {
+    parts.push(`═══ PYTHON RUNTIME: 2.7 (Older Abaqus) ═══
+The script MUST be compatible with Python 2.7. Strict rules:
+- Add header: # -*- coding: utf-8 -*-\\n# PY_RUNTIME: 2.7
+- NO f-strings — use % formatting or .format()
+- NO "raise X from e" exception chaining
+- NO type hints (def func(x: int) -> str)
+- NO pathlib, typing, dataclasses
+- Use list(dict.keys()) instead of dict.keys() when iterating
+- print('text') is acceptable (Abaqus 2.7 supports it)
+- Use 'except Exception as e:' not 'except Exception, e:'`);
+  } else {
+    parts.push(`═══ PYTHON RUNTIME: 3.x (Abaqus 2020+) ═══
+Add header: # PY_RUNTIME: 3.x
+Modern Python 3 syntax is allowed but keep Abaqus API compatibility.`);
+  }
+
   parts.push(`\nUSER REQUEST:\n${userPrompt}`);
 
   return parts.join("\n\n");
@@ -767,7 +835,7 @@ serve(async (req) => {
   const startTime = Date.now();
 
   try {
-    const { prompt, template_id, options = {} } = await req.json();
+    const { prompt, template_id, options = {}, runtime_mode = "py3" } = await req.json();
     if (!prompt || typeof prompt !== "string" || prompt.trim().length < 5) {
       return new Response(
         JSON.stringify({ ok: false, issues: ["Prompt is too short or missing."], trace_id: traceId }),
@@ -802,7 +870,7 @@ serve(async (req) => {
           ? { previousIssues: allIssues.filter((i) => !i.startsWith("INFO:")), previousResponse: lastRawResponse }
           : undefined;
 
-      const systemPrompt = buildPrompt(prompt, analysisType, autoTemplate || null, options, repairContext);
+      const systemPrompt = buildPrompt(prompt, analysisType, autoTemplate || null, options, repairContext, runtime_mode);
 
       const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
         method: "POST",

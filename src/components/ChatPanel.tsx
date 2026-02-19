@@ -14,6 +14,7 @@ interface Message {
 
 interface ChatPanelProps {
   onScriptGenerated: (script: string, prompt?: string) => void;
+  runtimeMode?: "py3" | "py27";
 }
 
 interface GenerateResponse {
@@ -34,7 +35,7 @@ interface GenerateResponse {
 
 const API_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-abaqus-script`;
 
-const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
+const ChatPanel = ({ onScriptGenerated, runtimeMode = "py3" }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -68,7 +69,7 @@ const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
           "Content-Type": "application/json",
           Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
         },
-        body: JSON.stringify({ prompt: userPrompt }),
+        body: JSON.stringify({ prompt: userPrompt, runtime_mode: runtimeMode }),
       });
 
       const result: GenerateResponse = await resp.json();
