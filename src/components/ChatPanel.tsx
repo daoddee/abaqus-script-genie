@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Loader2 } from "lucide-react";
+import { Send, Loader2, AlertTriangle, Info } from "lucide-react";
 import { toast } from "sonner";
 
 interface Message {
@@ -7,13 +7,32 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  issues?: string[];
+  analysisType?: string;
+  latencyMs?: number;
 }
 
 interface ChatPanelProps {
   onScriptGenerated: (script: string, prompt?: string) => void;
 }
 
-const STREAM_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-abaqus-script`;
+interface GenerateResponse {
+  ok: boolean;
+  data?: {
+    title: string;
+    assumptions: string[];
+    script: string;
+    notes: string[];
+    abaqus_version: string | null;
+    units: string | null;
+  };
+  analysis_type?: string;
+  issues?: string[];
+  trace_id: string;
+  latency_ms?: number;
+}
+
+const API_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-abaqus-script`;
 
 const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -42,10 +61,8 @@ const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
     setInput("");
     setIsGenerating(true);
 
-    let fullScript = "";
-
     try {
-      const resp = await fetch(STREAM_URL, {
+      const resp = await fetch(API_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -54,87 +71,67 @@ const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
         body: JSON.stringify({ prompt: userPrompt }),
       });
 
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ error: "Request failed" }));
-        throw new Error(err.error || `Error ${resp.status}`);
+      const result: GenerateResponse = await resp.json();
+
+      if (!result.ok || !result.data) {
+        const errorIssues = result.issues || ["Generation failed. Please try again."];
+        const errMsg: Message = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: errorIssues.join("\n"),
+          timestamp: new Date(),
+          issues: errorIssues,
+        };
+        setMessages((prev) => [...prev, errMsg]);
+        toast.error("Script generation failed");
+        return;
       }
 
-      if (!resp.body) throw new Error("No response stream");
+      // Success — build rich assistant message
+      const { data, analysis_type, issues, latency_ms } = result;
 
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        let newlineIdx: number;
-        while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
-          let line = buffer.slice(0, newlineIdx);
-          buffer = buffer.slice(newlineIdx + 1);
-          if (line.endsWith("\r")) line = line.slice(0, -1);
-          if (!line.startsWith("data: ")) continue;
-          const jsonStr = line.slice(6).trim();
-          if (jsonStr === "[DONE]") break;
-          try {
-            const parsed = JSON.parse(jsonStr);
-            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
-            if (content) {
-              fullScript += content;
-              // Update script preview in real time
-              onScriptGenerated(fullScript, userPrompt);
-            }
-          } catch {
-            buffer = line + "\n" + buffer;
-            break;
-          }
-        }
+      const lines: string[] = [];
+      lines.push(`**${data.title}**`);
+      lines.push("");
+      if (data.assumptions.length > 0) {
+        lines.push("Assumptions:");
+        data.assumptions.forEach((a) => lines.push(`• ${a}`));
+        lines.push("");
       }
-
-      // Flush remaining buffer
-      if (buffer.trim()) {
-        for (let raw of buffer.split("\n")) {
-          if (!raw) continue;
-          if (raw.endsWith("\r")) raw = raw.slice(0, -1);
-          if (!raw.startsWith("data: ")) continue;
-          const jsonStr = raw.slice(6).trim();
-          if (jsonStr === "[DONE]") continue;
-          try {
-            const parsed = JSON.parse(jsonStr);
-            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
-            if (content) {
-              fullScript += content;
-            }
-          } catch { /* ignore */ }
-        }
+      if (data.notes.length > 0) {
+        data.notes.forEach((n) => lines.push(`• ${n}`));
+        lines.push("");
       }
-
-      // Clean up: remove markdown fences if AI wrapped the code
-      fullScript = fullScript.replace(/^```python\n?/i, "").replace(/\n?```$/i, "").trim();
-
-      // Final update with cleaned script
-      onScriptGenerated(fullScript, userPrompt);
+      if (data.units) lines.push(`Units: ${data.units}`);
+      if (data.abaqus_version) lines.push(`Abaqus version: ${data.abaqus_version}`);
+      lines.push("");
+      lines.push("Script is ready in the preview panel.");
 
       const assistantMsg: Message = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: `Script generated successfully. Check the preview panel to review and run it.`,
+        content: lines.join("\n"),
         timestamp: new Date(),
+        issues: issues?.filter((i) => !i.startsWith("INFO:")),
+        analysisType: analysis_type,
+        latencyMs: latency_ms,
       };
+
       setMessages((prev) => [...prev, assistantMsg]);
+      onScriptGenerated(data.script, userPrompt);
     } catch (e) {
-      console.error("AI generation error:", e);
+      console.error("Generation error:", e);
       const errorMsg = e instanceof Error ? e.message : "Unknown error";
       toast.error(errorMsg);
-      const errAssistant: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: `Failed to generate script: ${errorMsg}`,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, errAssistant]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: `Failed to generate script: ${errorMsg}`,
+          timestamp: new Date(),
+        },
+      ]);
     } finally {
       setIsGenerating(false);
     }
@@ -158,9 +155,7 @@ const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
         {messages.map((msg) => (
           <div
             key={msg.id}
-            className={`animate-slide-up ${
-              msg.role === "user" ? "flex justify-end" : ""
-            }`}
+            className={`animate-slide-up ${msg.role === "user" ? "flex justify-end" : ""}`}
           >
             <div
               className={`max-w-[90%] rounded-lg px-3 py-2 text-sm leading-relaxed ${
@@ -180,6 +175,33 @@ const ChatPanel = ({ onScriptGenerated }: ChatPanelProps) => {
                   )}
                 </p>
               ))}
+              {/* Warnings/issues */}
+              {msg.issues && msg.issues.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {msg.issues.map((issue, i) => (
+                    <div
+                      key={i}
+                      className="flex items-start gap-1.5 text-xs"
+                    >
+                      {issue.startsWith("Missing") || issue.startsWith("No ") ? (
+                        <AlertTriangle className="w-3 h-3 text-destructive mt-0.5 shrink-0" />
+                      ) : (
+                        <Info className="w-3 h-3 text-muted-foreground mt-0.5 shrink-0" />
+                      )}
+                      <span className="text-muted-foreground">{issue}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Metadata */}
+              {msg.analysisType && (
+                <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground">
+                  <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 font-mono uppercase">
+                    {msg.analysisType}
+                  </span>
+                  {msg.latencyMs && <span>{(msg.latencyMs / 1000).toFixed(1)}s</span>}
+                </div>
+              )}
             </div>
           </div>
         ))}
