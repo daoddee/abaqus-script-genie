@@ -137,7 +137,7 @@ const Index = () => {
       {/* Main content */}
       <div className="flex-1 flex min-w-0">
         {/* Middle panel: Prompt / Debug tabs */}
-        <div className="w-[380px] border-r border-border flex flex-col shrink-0">
+        <div className="w-[380px] border-r border-border flex flex-col shrink-0 min-h-0 overflow-hidden">
           <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
             {!sidebarOpen && (
               <button
