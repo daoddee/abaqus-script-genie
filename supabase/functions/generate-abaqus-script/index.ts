@@ -140,6 +140,25 @@ const NAMING_CONVENTIONS: Record<string, RegExp> = {
   jobs: /['"]JOB_[A-Z0-9_]+['"]/,
 };
 
+// ── Banned API patterns (common Abaqus scripting mistakes) ──
+const BANNED_API_PATTERNS: { pattern: RegExp; message: string; fix: string }[] = [
+  {
+    pattern: /model\s*\.\s*BoundaryCondition\s*\(/,
+    message: "model.BoundaryCondition() is invalid Abaqus API",
+    fix: "Use specific BC types: EncastreBC, DisplacementBC, XsymmBC, YsymmBC, ZsymmBC, VelocityBC, etc.",
+  },
+  {
+    pattern: /influenceRegion\s*=\s*EVERYWHERE/,
+    message: "influenceRegion=EVERYWHERE is not a valid Abaqus keyword",
+    fix: "Use influenceRadius=WHOLE_SURFACE or a numeric radius.",
+  },
+  {
+    pattern: /from\s+abaqus\s+import\s+\*/g,
+    message: "Multiple 'from abaqus import *' detected — likely concatenated scripts",
+    fix: "Output exactly ONE script per response. Remove duplicate import blocks.",
+  },
+];
+
 // ── Build order enforcement ──
 const BUILD_ORDER_MARKERS = [
   { phase: "A1_model", pattern: /mdb\.Model\s*\(/, label: "Model creation" },
@@ -323,6 +342,90 @@ function checkPreFlightValidation(script: string): string[] {
   return issues;
 }
 
+// ── Banned API pattern checks ──
+function checkBannedPatterns(script: string): string[] {
+  const issues: string[] = [];
+
+  for (const { pattern, message, fix } of BANNED_API_PATTERNS) {
+    // Special case: duplicate import check (count occurrences)
+    if (pattern.source.includes("from\\s+abaqus")) {
+      const matches = script.match(/from\s+abaqus\s+import\s+\*/g);
+      if (matches && matches.length > 1) {
+        issues.push(`BANNED: ${message}. Fix: ${fix}`);
+      }
+    } else if (pattern.test(script)) {
+      issues.push(`BANNED: ${message}. Fix: ${fix}`);
+    }
+  }
+
+  return issues;
+}
+
+// ── Mesh discipline checks ──
+function checkMeshDiscipline(script: string): string[] {
+  const issues: string[] = [];
+
+  // Check for import mesh when mesh.ElemType or mesh. is used
+  if (/mesh\.ElemType|mesh\.\w+/i.test(script) && !/import\s+mesh/.test(script)) {
+    issues.push("Missing 'import mesh' — mesh.ElemType or mesh module used without importing it.");
+  }
+
+  // Check for global edge seeding (seedEdgeBySize on all edges without constraint)
+  const edgeSeedCount = (script.match(/seedEdgeBySize/g) || []).length;
+  const partSeedCount = (script.match(/seedPart/g) || []).length;
+  if (edgeSeedCount > 3 && partSeedCount === 0) {
+    issues.push(
+      "MESH: Excessive edge-level seeding without global seedPart(). Use seedPart() for global size, seedEdgeBySize() only for local refinement."
+    );
+  }
+
+  return issues;
+}
+
+// ── Step/Load discipline checks ──
+function checkStepLoadDiscipline(script: string): string[] {
+  const issues: string[] = [];
+
+  // Check for loads assigned to Initial step
+  if (/step\s*=\s*['"]Initial['"]/i.test(script) &&
+      /ConcentratedForce|Pressure|SurfaceTraction|Gravity|\.loads/i.test(script)) {
+    // Only flag if a load (not BC) references Initial
+    const lines = script.split("\n");
+    for (const line of lines) {
+      if (/step\s*=\s*['"]Initial['"]/i.test(line) &&
+          /ConcentratedForce|Pressure|SurfaceTraction|Gravity/i.test(line)) {
+        issues.push("STEP/LOAD: Load assigned to 'Initial' step — loads should go in a non-Initial step (e.g., STEP_LOAD).");
+        break;
+      }
+    }
+  }
+
+  // Check that at least one non-Initial step exists if loads are present
+  if (/ConcentratedForce|Pressure|SurfaceTraction|Gravity/i.test(script) &&
+      !/StaticStep|BuckleStep|FrequencyStep|ImplicitDynamicsStep|ExplicitDynamicsStep|HeatTransferStep/.test(script)) {
+    issues.push("STEP/LOAD: Loads present but no explicit non-Initial Step defined. Create a step before applying loads.");
+  }
+
+  return issues;
+}
+
+// ── Anti-default enforcement ──
+function checkAntiDefault(script: string): string[] {
+  const issues: string[] = [];
+
+  // Check for suspiciously generic default material properties that the AI may have invented
+  // Only flag if the script uses common placeholder values without PARAM reference
+  if (/Elastic.*table\s*=\s*\(\s*\(\s*210000|210\.0e3|2\.1e5/i.test(script) &&
+      !/PARAM\s*\[.*E\b|PARAM\s*\[.*elastic|PARAM\s*\[.*youngs/i.test(script) &&
+      !/PARAM\s*=.*E\s*=/i.test(script)) {
+    issues.push(
+      "INFO: Script uses default Steel (E=210 GPa) without parameterization. If user didn't specify material, consider raising RuntimeError('SPEC INCOMPLETE: material') instead."
+    );
+  }
+
+  return issues;
+}
+
 function lintScript(script: string): string[] {
   const issues: string[] = [];
 
@@ -361,6 +464,18 @@ function lintScript(script: string): string[] {
 
   // Pre-flight validation
   issues.push(...checkPreFlightValidation(script));
+
+  // Banned API patterns
+  issues.push(...checkBannedPatterns(script));
+
+  // Mesh discipline
+  issues.push(...checkMeshDiscipline(script));
+
+  // Step/Load discipline
+  issues.push(...checkStepLoadDiscipline(script));
+
+  // Anti-default enforcement
+  issues.push(...checkAntiDefault(script));
 
   return issues;
 }
@@ -498,8 +613,49 @@ Jobs:        JOB_<MODEL>_<TEST>
 - NEVER use referencePoints.keys()[index] — ordering is unstable
 - NEVER pass raw RP objects to Coupling controlPoint — must be Region(referencePoints=...)
 - NEVER use setElementType with raw tuple — must be Region(cells=...)
+- NEVER use model.BoundaryCondition() — use specific types: EncastreBC, DisplacementBC, XsymmBC, etc.
+- NEVER use influenceRegion=EVERYWHERE — use influenceRadius=WHOLE_SURFACE
+- NEVER output more than ONE script per response — if you see a second 'from abaqus import *' mid-file, you are concatenating scripts
 - ALWAYS create sets/surfaces BEFORE referencing them in BCs/loads
 - ALWAYS validate mesh: assert len(p.elements) > 0 after generateMesh()
+- ALWAYS import mesh module if using mesh.ElemType: import mesh
+- ALWAYS use seedPart() for global mesh size; seedEdgeBySize() ONLY for local refinement zones
+
+═══ ANTI-DEFAULT RULE ═══
+If the user prompt does NOT specify a value for any of the following, you MUST NOT invent a default.
+Instead, raise RuntimeError in the PARAM validation section:
+  - Material properties → raise RuntimeError('SPEC INCOMPLETE: Material not specified. Provide E, nu, density.')
+  - Element type → raise RuntimeError('SPEC INCOMPLETE: Element type not specified.')
+  - Units → raise RuntimeError('SPEC INCOMPLETE: Units not specified.')
+EXCEPTION: If the user says "steel" or "aluminum" etc. by name, you MAY use standard handbook values.
+EXCEPTION: Mesh seed size may be estimated from geometry (1/20th of shortest dimension).
+
+═══ TOLERANCE POLICY ═══
+Use a single tolerance strategy for getByBoundingBox:
+  tol = max(0.01, 1e-3 * max(PARAM.values() where numeric))
+Never use tol < 0.01 unless working at sub-millimeter scale.
+Include tol as a PARAM entry: PARAM['tol'] = ...
+
+═══ HELPER FUNCTIONS (include in every script) ═══
+Include these at the top of every script, after imports and PARAM:
+
+def REQUIRE(condition, msg):
+    if not condition:
+        raise RuntimeError('PRE-FLIGHT FAIL: %s' % msg)
+
+def RP_REGION(assembly, rp_obj):
+    import regionToolset
+    return regionToolset.Region(referencePoints=(rp_obj,))
+
+def SURF(assembly, name):
+    REQUIRE(name in assembly.surfaces, 'Surface %s not found' % name)
+    return assembly.surfaces[name]
+
+def CELLS_REGION(part):
+    import regionToolset
+    cells = part.cells[:]
+    REQUIRE(len(cells) > 0, 'No cells in part %s' % part.name)
+    return regionToolset.Region(cells=cells)
 
 ═══ MANDATORY RUNTIME SAFEGUARDS ═══
 
@@ -507,8 +663,7 @@ Jobs:        JOB_<MODEL>_<TEST>
    verify it is non-empty. This prevents cryptic "empty sequence" Abaqus errors.
    ✅ Pattern:
      faces = p.faces.getByBoundingBox(...)
-     if len(faces) == 0:
-         raise RuntimeError('PRE-FLIGHT FAIL: No faces found for SET_LOAD_FACE at bounding box (%s)' % str((xMin,yMin,zMin,xMax,yMax,zMax)))
+     REQUIRE(len(faces) > 0, 'No faces found for SET_LOAD_FACE at bounding box (%s)' % str((xMin,yMin,zMin,xMax,yMax,zMax)))
      p.Set(name='SET_LOAD_FACE', faces=faces)
 
    Apply this to EVERY set/surface creation: check len() > 0 before creating, raise RuntimeError with
@@ -518,7 +673,7 @@ Jobs:        JOB_<MODEL>_<TEST>
    a) Store the feature id immediately: rp_feat = a.ReferencePoint(point=(...))
    b) Retrieve by id: rp_obj = a.referencePoints[rp_feat.id]
    c) Register in REG dict: REG['rps']['RP_LOAD'] = rp_obj
-   d) Wrap in Region for couplings: region = regionToolset.Region(referencePoints=(rp_obj,))
+   d) Wrap in Region for couplings: region = RP_REGION(a, rp_obj)
    NEVER use referencePoints.keys() or referencePoints.values() iteration.
 
 3. MESH FALLBACK LOGIC — Wrap mesh generation in a try/except with a coarser fallback:
@@ -530,9 +685,15 @@ Jobs:        JOB_<MODEL>_<TEST>
          print('WARNING: Mesh failed at size %.1f, retrying at %.1f — %s' % (PARAM['mesh_size'], PARAM['mesh_size']*2, str(e_mesh)))
          p.seedPart(size=PARAM['mesh_size']*2, deviationFactor=0.1, minSizeFactor=0.1)
          p.generateMesh()
-     assert len(p.elements) > 0, 'MESH FAIL: No elements generated for part %s' % p.name
+     REQUIRE(len(p.elements) > 0, 'No elements generated for part %s' % p.name)
 
-4. CLEAR FAILURE MESSAGES — Wrap each major phase in try/except with a descriptive RuntimeError:
+4. STEP/LOAD DISCIPLINE:
+   - NEVER assign loads to the 'Initial' step
+   - All primary loads go into a named non-Initial step (e.g., STEP_LOAD)
+   - Validate: REQUIRE('STEP_LOAD' in model.steps or equivalent, 'Missing non-Initial step')
+   - Validate: REQUIRE(len(model.loads) > 0, 'No loads defined')
+
+5. CLEAR FAILURE MESSAGES — Wrap each major phase in try/except with a descriptive RuntimeError:
    ✅ Pattern:
      try:
          # Phase A: Foundation
@@ -544,13 +705,15 @@ Jobs:        JOB_<MODEL>_<TEST>
 
 ═══ SCRIPT STRUCTURE ═══
 Start with a PARAM dict at the top:
-  PARAM = dict(L=120.0, W=60.0, t=10.0, mesh_size=5.0, ...)
+  PARAM = dict(L=120.0, W=60.0, t=10.0, mesh_size=5.0, tol=0.05, ...)
 
 Include parameter validation:
   assert PARAM['L'] > 0, 'Length must be positive'
 
 Include an artifact register:
   REG = {'sets': {}, 'surfaces': {}, 'rps': {}}
+
+Include helper functions (REQUIRE, RP_REGION, SURF, CELLS_REGION) immediately after PARAM and REG.
 
 ═══ RESPONSE FORMAT ═══
 Respond with valid JSON only. No markdown. No code fences. Just a JSON object:
