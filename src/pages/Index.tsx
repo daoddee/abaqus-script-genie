@@ -1,22 +1,26 @@
 import { useState, useRef, useCallback } from "react";
-import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal, Send, Bug } from "lucide-react";
 import ChatPanel from "../components/ChatPanel";
 import ScriptPreview from "../components/ScriptPreview";
 import type { ArchivedScript } from "../components/ScriptPreview";
 import TemplatePanel from "../components/TemplatePanel";
 import HistorySidebar from "../components/HistorySidebar";
+import DebugPanel from "../components/DebugPanel";
 
 type SidebarTab = "templates" | "history";
+type MiddleTab = "prompt" | "debug";
 
 const Index = () => {
   const [script, setScript] = useState("");
   const [archivedScripts, setArchivedScripts] = useState<ArchivedScript[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("templates");
+  const [middleTab, setMiddleTab] = useState<MiddleTab>("prompt");
   const scriptNameRef = useRef("abaqus_script.py");
   const activePromptRef = useRef<string | null>(null);
   const chatRef = useRef<{ setInput: (val: string) => void } | null>(null);
 
+  // ... keep existing code (generateScriptName, handleScriptGenerated, handleTemplateSelect)
   const generateScriptName = (prompt: string): string => {
     const words = prompt.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
     const meaningful = words.filter(w => !["a", "the", "an", "with", "and", "or", "create", "make", "build", "generate", "model", "please"].includes(w));
@@ -25,7 +29,6 @@ const Index = () => {
   };
 
   const handleScriptGenerated = useCallback((newScript: string, prompt?: string) => {
-    // If this is a NEW prompt (different from active), archive old script first
     if (prompt && prompt !== activePromptRef.current) {
       if (script && activePromptRef.current) {
         const archiveName = scriptNameRef.current;
@@ -39,7 +42,6 @@ const Index = () => {
   }, [script]);
 
   const handleTemplateSelect = (prompt: string) => {
-    // We'll use a simple approach: set the input via a callback
     const inputEl = document.querySelector<HTMLInputElement>(
       'input[placeholder="Describe your model..."]'
     );
@@ -59,7 +61,6 @@ const Index = () => {
       {/* Left Sidebar */}
       {sidebarOpen && (
         <div className="w-64 border-r border-border flex flex-col bg-card shrink-0">
-          {/* Sidebar header */}
           <div className="flex items-center justify-between px-3 py-3 border-b border-border">
             <div className="flex items-center gap-2">
               <div className="w-7 h-7 rounded border border-primary/30 flex items-center justify-center glow-primary-sm">
@@ -75,7 +76,6 @@ const Index = () => {
             </button>
           </div>
 
-          {/* Sidebar tabs */}
           <div className="flex border-b border-border">
             <button
               onClick={() => setSidebarTab("templates")}
@@ -101,7 +101,6 @@ const Index = () => {
             </button>
           </div>
 
-          {/* Sidebar content */}
           <div className="flex-1 overflow-y-auto scrollbar-thin">
             {sidebarTab === "templates" ? (
               <TemplatePanel onSelectTemplate={handleTemplateSelect} />
@@ -110,7 +109,6 @@ const Index = () => {
             )}
           </div>
 
-          {/* Sidebar footer */}
           <div className="p-3 border-t border-border">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Terminal className="w-3.5 h-3.5" />
@@ -123,7 +121,7 @@ const Index = () => {
 
       {/* Main content */}
       <div className="flex-1 flex min-w-0">
-        {/* Chat panel */}
+        {/* Middle panel: Prompt / Debug tabs */}
         <div className="w-[380px] border-r border-border flex flex-col shrink-0">
           <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
             {!sidebarOpen && (
@@ -134,10 +132,38 @@ const Index = () => {
                 <PanelLeftOpen className="w-4 h-4" />
               </button>
             )}
-            <h2 className="text-sm font-semibold text-foreground">Prompt</h2>
+            {/* Tab switcher */}
+            <div className="flex items-center gap-0.5 bg-muted rounded-md p-0.5">
+              <button
+                onClick={() => setMiddleTab("prompt")}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-colors ${
+                  middleTab === "prompt"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Send className="w-3 h-3" />
+                Prompt
+              </button>
+              <button
+                onClick={() => setMiddleTab("debug")}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-colors ${
+                  middleTab === "debug"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Bug className="w-3 h-3" />
+                Debug
+              </button>
+            </div>
             <span className="text-xs text-muted-foreground ml-auto font-mono">v0.1</span>
           </div>
-          <ChatPanel onScriptGenerated={handleScriptGenerated} />
+          {middleTab === "prompt" ? (
+            <ChatPanel onScriptGenerated={handleScriptGenerated} />
+          ) : (
+            <DebugPanel script={script} onApplyFix={setScript} />
+          )}
         </div>
 
         {/* Script preview */}
