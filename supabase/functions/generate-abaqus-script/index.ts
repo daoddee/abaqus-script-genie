@@ -280,6 +280,46 @@ function checkPreFlightValidation(script: string): string[] {
     );
   }
 
+  // Pre-flight: sets/surfaces should check len() before creation
+  const setCreations = (script.match(/\.Set\s*\(/g) || []).length;
+  const lenChecks = (script.match(/if\s+len\s*\(|len\s*\([^)]+\)\s*==\s*0|len\s*\([^)]+\)\s*>\s*0/g) || []).length;
+  if (setCreations > 0 && lenChecks === 0) {
+    issues.push(
+      "PRE-FLIGHT: No len() checks before Set/Surface creation — empty selections will cause silent failures. Add: if len(faces)==0: raise RuntimeError(...)"
+    );
+  }
+
+  // Mesh fallback: check for try/except around generateMesh
+  if (/generateMesh/.test(script) && !/except.*mesh|except.*Mesh|except\s+Exception.*mesh/i.test(script)) {
+    issues.push(
+      "INFO: No mesh fallback (try/except with coarser seed). Wrap generateMesh() in try/except for resilience."
+    );
+  }
+
+  // Phase-level error wrapping
+  const phaseWraps = (script.match(/PHASE\s+[A-E]\s+(FAILED|failed)/g) || []).length;
+  if (script.length > 500 && phaseWraps === 0 && !/raise\s+RuntimeError/.test(script)) {
+    issues.push(
+      "INFO: No phase-level error wrapping. Wrap each phase (A-E) in try/except with descriptive RuntimeError for debuggability."
+    );
+  }
+
+  // Deterministic RP: check .id usage when ReferencePoint is created
+  const rpCreations = (script.match(/ReferencePoint\s*\(/g) || []).length;
+  const rpIdUsages = (script.match(/\.id\b/g) || []).length;
+  if (rpCreations > 0 && rpIdUsages < rpCreations) {
+    issues.push(
+      "RP HANDLING: Not all ReferencePoint creations store .id — use rp_feat.id to retrieve RP deterministically."
+    );
+  }
+
+  // REG dict usage
+  if (rpCreations > 0 && !/REG\s*\[/.test(script)) {
+    issues.push(
+      "INFO: No artifact register (REG dict) found. Store created RPs/sets/surfaces in REG for reliable referencing."
+    );
+  }
+
   return issues;
 }
 
@@ -461,9 +501,50 @@ Jobs:        JOB_<MODEL>_<TEST>
 - ALWAYS create sets/surfaces BEFORE referencing them in BCs/loads
 - ALWAYS validate mesh: assert len(p.elements) > 0 after generateMesh()
 
+═══ MANDATORY RUNTIME SAFEGUARDS ═══
+
+1. PRE-FLIGHT VALIDATION — Before using any set or surface in a BC, load, coupling, or interaction,
+   verify it is non-empty. This prevents cryptic "empty sequence" Abaqus errors.
+   ✅ Pattern:
+     faces = p.faces.getByBoundingBox(...)
+     if len(faces) == 0:
+         raise RuntimeError('PRE-FLIGHT FAIL: No faces found for SET_LOAD_FACE at bounding box (%s)' % str((xMin,yMin,zMin,xMax,yMax,zMax)))
+     p.Set(name='SET_LOAD_FACE', faces=faces)
+
+   Apply this to EVERY set/surface creation: check len() > 0 before creating, raise RuntimeError with
+   the set/surface name and the selection parameters if empty.
+
+2. DETERMINISTIC RP HANDLING — Every ReferencePoint MUST:
+   a) Store the feature id immediately: rp_feat = a.ReferencePoint(point=(...))
+   b) Retrieve by id: rp_obj = a.referencePoints[rp_feat.id]
+   c) Register in REG dict: REG['rps']['RP_LOAD'] = rp_obj
+   d) Wrap in Region for couplings: region = regionToolset.Region(referencePoints=(rp_obj,))
+   NEVER use referencePoints.keys() or referencePoints.values() iteration.
+
+3. MESH FALLBACK LOGIC — Wrap mesh generation in a try/except with a coarser fallback:
+   ✅ Pattern:
+     try:
+         p.seedPart(size=PARAM['mesh_size'], deviationFactor=0.1, minSizeFactor=0.1)
+         p.generateMesh()
+     except Exception as e_mesh:
+         print('WARNING: Mesh failed at size %.1f, retrying at %.1f — %s' % (PARAM['mesh_size'], PARAM['mesh_size']*2, str(e_mesh)))
+         p.seedPart(size=PARAM['mesh_size']*2, deviationFactor=0.1, minSizeFactor=0.1)
+         p.generateMesh()
+     assert len(p.elements) > 0, 'MESH FAIL: No elements generated for part %s' % p.name
+
+4. CLEAR FAILURE MESSAGES — Wrap each major phase in try/except with a descriptive RuntimeError:
+   ✅ Pattern:
+     try:
+         # Phase A: Foundation
+         ...
+     except Exception as e:
+         raise RuntimeError('PHASE A FAILED (Foundation — model/material/part): %s' % str(e))
+   Do this for each phase (A through E). The error message MUST include the phase name,
+   what it was trying to do, and the original exception text.
+
 ═══ SCRIPT STRUCTURE ═══
 Start with a PARAM dict at the top:
-  PARAM = dict(L=120.0, W=60.0, t=10.0, ...)
+  PARAM = dict(L=120.0, W=60.0, t=10.0, mesh_size=5.0, ...)
 
 Include parameter validation:
   assert PARAM['L'] > 0, 'Length must be positive'
