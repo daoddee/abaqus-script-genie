@@ -14,6 +14,84 @@ export type Database = {
   }
   public: {
     Tables: {
+      audit_events: {
+        Row: {
+          created_at: string
+          event_type: string
+          id: string
+          ip: string | null
+          metadata_json: Json | null
+          user_agent: string | null
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          event_type: string
+          id?: string
+          ip?: string | null
+          metadata_json?: Json | null
+          user_agent?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          event_type?: string
+          id?: string
+          ip?: string | null
+          metadata_json?: Json | null
+          user_agent?: string | null
+          user_id?: string | null
+        }
+        Relationships: []
+      }
+      generations: {
+        Row: {
+          analysis_type: string | null
+          created_at: string
+          id: string
+          issues: string[] | null
+          latency_ms: number | null
+          model: string
+          prompt_hash: string
+          raw_prompt: string | null
+          script_hash: string | null
+          success: boolean
+          template_id: string | null
+          title: string | null
+          user_id: string
+        }
+        Insert: {
+          analysis_type?: string | null
+          created_at?: string
+          id?: string
+          issues?: string[] | null
+          latency_ms?: number | null
+          model?: string
+          prompt_hash: string
+          raw_prompt?: string | null
+          script_hash?: string | null
+          success?: boolean
+          template_id?: string | null
+          title?: string | null
+          user_id: string
+        }
+        Update: {
+          analysis_type?: string | null
+          created_at?: string
+          id?: string
+          issues?: string[] | null
+          latency_ms?: number | null
+          model?: string
+          prompt_hash?: string
+          raw_prompt?: string | null
+          script_hash?: string | null
+          success?: boolean
+          template_id?: string | null
+          title?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           avatar_url: string | null
