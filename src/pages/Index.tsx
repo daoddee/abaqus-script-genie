@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from "react";
-import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal, Send, Bug } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal, Send, Bug, CreditCard } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import ChatPanel from "../components/ChatPanel";
 import ScriptPreview from "../components/ScriptPreview";
 import type { ArchivedScript } from "../components/ScriptPreview";
@@ -12,6 +13,7 @@ type MiddleTab = "prompt" | "debug";
 type RuntimeMode = "py3" | "py27";
 
 const Index = () => {
+  const navigate = useNavigate();
   const [script, setScript] = useState("");
   const [archivedScripts, setArchivedScripts] = useState<ArchivedScript[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -112,6 +114,13 @@ const Index = () => {
           </div>
 
           <div className="p-3 border-t border-border space-y-2">
+            <button
+              onClick={() => navigate("/plans")}
+              className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            >
+              <CreditCard className="w-3.5 h-3.5" />
+              Plans & Billing
+            </button>
             <button
               onClick={() => setRuntimeMode(runtimeMode === "py3" ? "py27" : "py3")}
               className="flex items-center justify-between w-full px-2 py-1.5 rounded-md bg-muted/60 border border-border hover:bg-muted transition-colors"
