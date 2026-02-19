@@ -17,7 +17,7 @@ export const PLAN_TIERS = {
     productId: "prod_U0gU0kYENhErbL",
     priceId: "price_1T2f7FAqi6NuZJQwHSudP42z",
     name: "Standard",
-    priceNow: 19,
+    priceNow: 19.99,
     priceWas: 29,
     features: [
       "50 script generations/month",
@@ -30,7 +30,7 @@ export const PLAN_TIERS = {
     productId: "prod_U0gV9KIZT1q4ZY",
     priceId: "price_1T2f8KAqi6NuZJQweW4tlP6D",
     name: "Pro",
-    priceNow: 39,
+    priceNow: 24.99,
     priceWas: 59,
     featured: true,
     features: [
@@ -45,7 +45,7 @@ export const PLAN_TIERS = {
     productId: "prod_U0gVOJgadWFfbp",
     priceId: "price_1T2f8UAqi6NuZJQwXfLNeMpB",
     name: "Team",
-    priceNow: 99,
+    priceNow: 99.99,
     priceWas: 129,
     features: [
       "Everything in Pro",
