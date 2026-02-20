@@ -167,6 +167,11 @@ const BANNED_API_PATTERNS: { pattern: RegExp; message: string; fix: string }[] =
     message: "setElementType regions argument must be tuple-wrapped cells, not a Region object",
     fix: "Use: part.setElementType(regions=(part.cells[:],), elemTypes=(elemType,))",
   },
+  {
+    pattern: /session\.viewports/,
+    message: "session.viewports requires GUI — scripts must be noGUI-safe",
+    fix: "Remove all viewport/visualization calls. Use odbAccess for postprocessing.",
+  },
 ];
 
 // ── Build order enforcement ──
@@ -196,7 +201,6 @@ function checkBuildOrder(script: string): string[] {
     }
   }
 
-  // Check that phases appear in order
   for (let i = 1; i < positions.length; i++) {
     if (positions[i].pos < positions[i - 1].pos) {
       issues.push(
@@ -212,7 +216,6 @@ function checkBuildOrder(script: string): string[] {
 function checkSelectionStrategy(script: string): string[] {
   const issues: string[] = [];
 
-  // Count findAt usages
   const findAtCount = (script.match(/findAt\s*\(/g) || []).length;
   const bboxCount = (script.match(/getByBoundingBox\s*\(/g) || []).length;
   const indexAccessCount = (script.match(/\.(faces|edges|cells|vertices)\[\d+\]/g) || []).length;
@@ -229,14 +232,12 @@ function checkSelectionStrategy(script: string): string[] {
     );
   }
 
-  // Check for .keys() ordering on referencePoints (fragile)
   if (/referencePoints\.keys\s*\(\s*\)\s*\[/.test(script)) {
     issues.push(
       `SELECTION: Using referencePoints.keys()[index] — key ordering is unstable. Store the feature .id directly instead.`
     );
   }
 
-  // Check for RP stored correctly
   if (/ReferencePoint\s*\(/.test(script) && !/\.id/.test(script)) {
     issues.push(
       `SELECTION: ReferencePoint created but .id not stored — use rp_feat = a.ReferencePoint(...); rp_obj = a.referencePoints[rp_feat.id].`
@@ -250,7 +251,6 @@ function checkSelectionStrategy(script: string): string[] {
 function checkRegionTypes(script: string): string[] {
   const issues: string[] = [];
 
-  // Coupling controlPoint should use Region, not raw RP
   if (/Coupling\s*\(/.test(script) && /controlPoint\s*=\s*[^R]*referencePoints\[/.test(script)) {
     if (!/Region\s*\(\s*referencePoints/.test(script)) {
       issues.push(
@@ -259,15 +259,12 @@ function checkRegionTypes(script: string): string[] {
     }
   }
 
-  // setElementType: must use (part.cells[:],) not Region or CELLS_REGION
   if (/setElementType\s*\(/.test(script)) {
-    // Flag if using Region() or CELLS_REGION() inside setElementType
     if (/setElementType\s*\([^)]*(?:CELLS_REGION|regionToolset\.Region|Region\s*\(\s*cells)/.test(script)) {
       issues.push(
         `REGION: setElementType regions must be tuple-wrapped cells: regions=(part.cells[:],). Do NOT use Region() or CELLS_REGION().`
       );
     }
-    // Also flag if cells are not tuple-wrapped
     if (/setElementType\s*\(\s*regions?\s*=\s*\w+\.cells\b(?!\s*\[\s*:\s*\])/.test(script)) {
       issues.push(
         `REGION: setElementType regions must slice cells: regions=(part.cells[:],) — missing [:] slice.`
@@ -300,7 +297,6 @@ function checkContactEngagement(script: string): string[] {
 function checkNamingConventions(script: string): string[] {
   const issues: string[] = [];
 
-  // Only warn if no naming convention detected at all
   let conventionCount = 0;
   for (const [, pattern] of Object.entries(NAMING_CONVENTIONS)) {
     if (pattern.test(script)) conventionCount++;
@@ -319,37 +315,32 @@ function checkNamingConventions(script: string): string[] {
 function checkPreFlightValidation(script: string): string[] {
   const issues: string[] = [];
 
-  // Check if script validates mesh generation
   if (/generateMesh/.test(script) && !/len\s*\(\s*\w+\.elements\s*\)/.test(script)) {
     issues.push(
       "INFO: No mesh validation after generateMesh(). Consider adding: assert len(p.elements) > 0"
     );
   }
 
-  // Check for field output requests
   if (!/fieldOutputRequests|FieldOutputRequest/.test(script)) {
     issues.push(
       "INFO: No explicit field output request. Default outputs may not include stress (S) and displacement (U)."
     );
   }
 
-  // Pre-flight: sets/surfaces should check len() before creation
   const setCreations = (script.match(/\.Set\s*\(/g) || []).length;
-  const lenChecks = (script.match(/if\s+len\s*\(|len\s*\([^)]+\)\s*==\s*0|len\s*\([^)]+\)\s*>\s*0/g) || []).length;
+  const lenChecks = (script.match(/if\s+len\s*\(|len\s*\([^)]+\)\s*==\s*0|len\s*\([^)]+\)\s*>\s*0|REQUIRE\s*\(/g) || []).length;
   if (setCreations > 0 && lenChecks === 0) {
     issues.push(
-      "PRE-FLIGHT: No len() checks before Set/Surface creation — empty selections will cause silent failures. Add: if len(faces)==0: raise RuntimeError(...)"
+      "PRE-FLIGHT: No len() checks or REQUIRE() calls before Set/Surface creation — empty selections will cause silent failures."
     );
   }
 
-  // Mesh fallback: check for try/except around generateMesh
-  if (/generateMesh/.test(script) && !/except.*mesh|except.*Mesh|except\s+Exception.*mesh/i.test(script)) {
+  if (/generateMesh/.test(script) && !/except.*mesh|except.*Mesh|except\s+Exception.*mesh|MESH_LADDER|mesh_ladder/i.test(script)) {
     issues.push(
-      "INFO: No mesh fallback (try/except with coarser seed). Wrap generateMesh() in try/except for resilience."
+      "INFO: No mesh fallback (try/except with coarser seed or element change). Wrap generateMesh() in mesh ladder for resilience."
     );
   }
 
-  // Phase-level error wrapping
   const phaseWraps = (script.match(/PHASE\s+[A-E]\s+(FAILED|failed)/g) || []).length;
   if (script.length > 500 && phaseWraps === 0 && !/raise\s+RuntimeError/.test(script)) {
     issues.push(
@@ -357,7 +348,6 @@ function checkPreFlightValidation(script: string): string[] {
     );
   }
 
-  // Deterministic RP: check .id usage when ReferencePoint is created
   const rpCreations = (script.match(/ReferencePoint\s*\(/g) || []).length;
   const rpIdUsages = (script.match(/\.id\b/g) || []).length;
   if (rpCreations > 0 && rpIdUsages < rpCreations) {
@@ -366,10 +356,42 @@ function checkPreFlightValidation(script: string): string[] {
     );
   }
 
-  // REG dict usage
   if (rpCreations > 0 && !/REG\s*\[/.test(script)) {
     issues.push(
       "INFO: No artifact register (REG dict) found. Store created RPs/sets/surfaces in REG for reliable referencing."
+    );
+  }
+
+  // ── NEW: noGUI safety check ──
+  if (/session\.viewports|session\.printToFile|getDisplay|session\.journalOptions/i.test(script)) {
+    issues.push(
+      "noGUI: Script uses GUI-dependent calls (session.viewports, etc.). Remove for headless/noGUI compatibility."
+    );
+  }
+
+  // ── NEW: Unit consistency check ──
+  if (/density/i.test(script)) {
+    // Check for common wrong density (kg/m³ in mm system)
+    if (/7[89]\d{2}\.?\d*/.test(script) && /mm|millimeter/i.test(script)) {
+      issues.push(
+        "UNIT: Density appears to be in kg/m³ (e.g., 7850) but geometry is in mm. For mm/N/MPa use tonne/mm³ (7.85e-9)."
+      );
+    }
+  }
+
+  // ── NEW: Validate BC exists in Initial step ──
+  if (/StaticStep|BuckleStep|FrequencyStep/i.test(script)) {
+    if (!/EncastreBC|DisplacementBC|XsymmBC|YsymmBC|ZsymmBC|PinnedBC/.test(script)) {
+      issues.push(
+        "PRE-FLIGHT: No boundary condition found. Model will have rigid body motion without BCs in Initial step."
+      );
+    }
+  }
+
+  // ── NEW: Check for ODB handle closure ──
+  if (/openOdb\s*\(/.test(script) && !/\.close\s*\(/.test(script)) {
+    issues.push(
+      "ODB: ODB opened but never closed. Always close ODB handles: odb.close()"
     );
   }
 
@@ -381,7 +403,6 @@ function checkBannedPatterns(script: string): string[] {
   const issues: string[] = [];
 
   for (const { pattern, message, fix } of BANNED_API_PATTERNS) {
-    // Special case: duplicate import check (count occurrences)
     if (pattern.source.includes("from\\s+abaqus")) {
       const matches = script.match(/from\s+abaqus\s+import\s+\*/g);
       if (matches && matches.length > 1) {
@@ -399,17 +420,15 @@ function checkBannedPatterns(script: string): string[] {
 function checkMeshDiscipline(script: string): string[] {
   const issues: string[] = [];
 
-  // Check for import mesh when mesh.ElemType or mesh. is used
   if (/mesh\.ElemType|mesh\.\w+/i.test(script) && !/import\s+mesh/.test(script)) {
     issues.push("Missing 'import mesh' — mesh.ElemType or mesh module used without importing it.");
   }
 
-  // Check for global edge seeding (seedEdgeBySize on all edges without constraint)
   const edgeSeedCount = (script.match(/seedEdgeBySize/g) || []).length;
   const partSeedCount = (script.match(/seedPart/g) || []).length;
   if (edgeSeedCount > 3 && partSeedCount === 0) {
     issues.push(
-      "MESH: Excessive edge-level seeding without global seedPart(). Use seedPart() for global size, seedEdgeBySize() only for local refinement."
+      "MESH: Excessive edge-level seeding without global seedPart(). Use seedPart() for global size, seedEdgeBySize() ONLY for local refinement."
     );
   }
 
@@ -420,10 +439,8 @@ function checkMeshDiscipline(script: string): string[] {
 function checkStepLoadDiscipline(script: string): string[] {
   const issues: string[] = [];
 
-  // Check for loads assigned to Initial step
   if (/step\s*=\s*['"]Initial['"]/i.test(script) &&
       /ConcentratedForce|Pressure|SurfaceTraction|Gravity|\.loads/i.test(script)) {
-    // Only flag if a load (not BC) references Initial
     const lines = script.split("\n");
     for (const line of lines) {
       if (/step\s*=\s*['"]Initial['"]/i.test(line) &&
@@ -434,7 +451,6 @@ function checkStepLoadDiscipline(script: string): string[] {
     }
   }
 
-  // Check that at least one non-Initial step exists if loads are present
   if (/ConcentratedForce|Pressure|SurfaceTraction|Gravity/i.test(script) &&
       !/StaticStep|BuckleStep|FrequencyStep|ImplicitDynamicsStep|ExplicitDynamicsStep|HeatTransferStep/.test(script)) {
     issues.push("STEP/LOAD: Loads present but no explicit non-Initial Step defined. Create a step before applying loads.");
@@ -447,14 +463,33 @@ function checkStepLoadDiscipline(script: string): string[] {
 function checkAntiDefault(script: string): string[] {
   const issues: string[] = [];
 
-  // Check for suspiciously generic default material properties that the AI may have invented
-  // Only flag if the script uses common placeholder values without PARAM reference
   if (/Elastic.*table\s*=\s*\(\s*\(\s*210000|210\.0e3|2\.1e5/i.test(script) &&
       !/PARAM\s*\[.*E\b|PARAM\s*\[.*elastic|PARAM\s*\[.*youngs/i.test(script) &&
       !/PARAM\s*=.*E\s*=/i.test(script)) {
     issues.push(
       "INFO: Script uses default Steel (E=210 GPa) without parameterization. If user didn't specify material, consider raising RuntimeError('SPEC INCOMPLETE: material') instead."
     );
+  }
+
+  return issues;
+}
+
+// ── NEW: Version compatibility checks ──
+function checkVersionCompatibility(script: string): string[] {
+  const issues: string[] = [];
+
+  // Check for keywords that changed across versions
+  if (/nodalThicknessField/i.test(script)) {
+    issues.push("VERSION: nodalThicknessField is only available in Abaqus 2020+.");
+  }
+
+  if (/ContactInitialization/i.test(script) && !/2022|2023|2024/i.test(script)) {
+    issues.push("VERSION: ContactInitialization may not be available in Abaqus versions before 2022.");
+  }
+
+  // Check for deprecated patterns
+  if (/contactControls\s*=\s*['"].*['"]/.test(script) && /SurfaceToSurfaceContactStd/.test(script)) {
+    issues.push("VERSION: contactControls string reference in SurfaceToSurfaceContactStd is deprecated in 2023+. Use ContactStd with ContactControl objects.");
   }
 
   return issues;
@@ -484,37 +519,92 @@ function lintScript(script: string): string[] {
     }
   }
 
-  // Build order
+  // All check suites
   issues.push(...checkBuildOrder(script));
-
-  // Selection strategy
   issues.push(...checkSelectionStrategy(script));
-
-  // Region types
   issues.push(...checkRegionTypes(script));
-
-  // Contact engagement
   issues.push(...checkContactEngagement(script));
-
-  // Naming conventions
   issues.push(...checkNamingConventions(script));
-
-  // Pre-flight validation
   issues.push(...checkPreFlightValidation(script));
-
-  // Banned API patterns
   issues.push(...checkBannedPatterns(script));
-
-  // Mesh discipline
   issues.push(...checkMeshDiscipline(script));
-
-  // Step/Load discipline
   issues.push(...checkStepLoadDiscipline(script));
-
-  // Anti-default enforcement
   issues.push(...checkAntiDefault(script));
+  issues.push(...checkVersionCompatibility(script));
 
   return issues;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ERROR CLASSIFIER (Self-Healing)
+// ═══════════════════════════════════════════════════════════════════
+
+interface ErrorClassification {
+  category: string;
+  pattern: string;
+  patchStrategy: string;
+  promptHint: string;
+}
+
+const ERROR_CLASSIFIERS: ErrorClassification[] = [
+  {
+    category: "SELECTION_EMPTY",
+    pattern: "empty sequence|no entities found|SelectionEmpty|getByBoundingBox returned 0",
+    patchStrategy: "Widen bounding box tolerance or switch to findAt with fallback",
+    promptHint: "The previous script had empty selections. Use wider bounding boxes with tol = max(0.1, 0.01 * max_dimension). Always validate with REQUIRE(len(...) > 0, ...).",
+  },
+  {
+    category: "MESH_FAILURE",
+    pattern: "mesh|Mesh generation|element|hex|tet|C3D|seed|meshing",
+    patchStrategy: "Apply mesh ladder: HEX sweep → HEX structured → TET C3D10 → coarser seed",
+    promptHint: "Mesh generation failed. Use the MESH_LADDER pattern: try C3D8R sweep, if fails try structured, if fails switch to C3D10 TET, if still fails double seed size.",
+  },
+  {
+    category: "KEYWORD_INVALID",
+    pattern: "keyword not recognized|invalid keyword|not valid|not a valid",
+    patchStrategy: "Check version compatibility map and swap keyword",
+    promptHint: "An Abaqus keyword was invalid. Check if it exists in the target Abaqus version. Use cross-version safe alternatives.",
+  },
+  {
+    category: "OVERCONSTRAINT",
+    pattern: "overconstraint|overconstrained|zero pivot|singular|rigid body motion",
+    patchStrategy: "Check BCs for redundancy, ensure no conflicting constraints",
+    promptHint: "Model is overconstrained or has zero pivots. Review BCs: ensure no duplicate constraints on same DOFs, check for redundant couplings.",
+  },
+  {
+    category: "CONTACT_FAILURE",
+    pattern: "contact|friction|slave|master|surface interaction|no contact pressure",
+    patchStrategy: "Add engagement step, check surface normals, verify contact pair",
+    promptHint: "Contact failed. Ensure: 1) surfaces exist and are non-empty, 2) STEP_CLAMP before shear loads, 3) correct master/slave assignment, 4) friction via table=((mu,),).",
+  },
+  {
+    category: "ODB_ACCESS",
+    pattern: "ODB|odb|output database|field output|history output",
+    patchStrategy: "Check job completion, verify output request, use odbAccess headless",
+    promptHint: "ODB access failed. Ensure: 1) job completed successfully (check .sta), 2) requested field outputs exist, 3) use odbAccess.openOdb() not session, 4) close odb handle.",
+  },
+  {
+    category: "STEP_ERROR",
+    pattern: "step|Step|initial|convergence|increment|time period",
+    patchStrategy: "Check step parameters, add stabilization, adjust incrementation",
+    promptHint: "Step failed. Check: 1) loads not in Initial step, 2) step exists before loads/BCs reference it, 3) for nonlinear: nlgeom=ON, appropriate initial/max increments.",
+  },
+  {
+    category: "REGION_TYPE",
+    pattern: "Region|region|coupling|controlPoint|setElementType",
+    patchStrategy: "Fix Region wrapping for couplings and setElementType",
+    promptHint: "Region type error. For Coupling controlPoint: use regionToolset.Region(referencePoints=(rp_obj,)). For setElementType: use regions=(part.cells[:],) NOT Region().",
+  },
+];
+
+function classifyError(errorText: string): ErrorClassification | null {
+  for (const classifier of ERROR_CLASSIFIERS) {
+    const patterns = classifier.pattern.split("|");
+    if (patterns.some((p) => new RegExp(p, "i").test(errorText))) {
+      return classifier;
+    }
+  }
+  return null;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -528,6 +618,16 @@ interface ScriptSchema {
   notes: string[];
   abaqus_version: string | null;
   units: string | null;
+  plan?: ModelPlan;
+}
+
+interface ModelPlan {
+  geometry_strategy: string;
+  mesh_strategy: string;
+  bc_strategy: string;
+  load_strategy: string;
+  selection_strategy: string;
+  postprocessing: string;
 }
 
 function validateSchema(obj: unknown): { valid: boolean; data?: ScriptSchema; error?: string } {
@@ -547,6 +647,7 @@ function validateSchema(obj: unknown): { valid: boolean; data?: ScriptSchema; er
       notes: o.notes as string[],
       abaqus_version: (o.abaqus_version as string) || null,
       units: (o.units as string) || null,
+      plan: o.plan as ModelPlan | undefined,
     },
   };
 }
@@ -560,7 +661,7 @@ function buildPrompt(
   analysisType: string,
   template: string | null,
   options: Record<string, string>,
-  repairContext?: { previousIssues: string[]; previousResponse: string },
+  repairContext?: { previousIssues: string[]; previousResponse: string; errorClassification?: ErrorClassification },
   runtimeMode: string = "py3"
 ): string {
   const parts: string[] = [];
@@ -572,6 +673,10 @@ ${repairContext.previousIssues.map((i) => `- ${i}`).join("\n")}
 Previous (broken) response (truncated):
 ${repairContext.previousResponse.substring(0, 2000)}
 
+${repairContext.errorClassification ? `ERROR CLASSIFICATION: ${repairContext.errorClassification.category}
+PATCH STRATEGY: ${repairContext.errorClassification.patchStrategy}
+SPECIFIC FIX: ${repairContext.errorClassification.promptHint}` : ""}
+
 Fix ALL issues and return a corrected JSON response. Pay special attention to:
 - Build order (model → material → part → section → assembly → sets → steps → BCs → loads → mesh → job)
 - Selection strategy (prefer sets/bounding-box over findAt/index)
@@ -581,11 +686,26 @@ Fix ALL issues and return a corrected JSON response. Pay special attention to:
 
   parts.push(`You are an expert Abaqus/CAE Python scripting assistant that produces production-ready, resilient scripts.
 
+═══ WORKFLOW: PLAN FIRST, THEN CODE ═══
+Before writing ANY code, you MUST create a plan. Include a "plan" field in your JSON response:
+{
+  "plan": {
+    "geometry_strategy": "How the geometry will be created (sketch approach, partitions, features)",
+    "mesh_strategy": "Element type, mesh technique, seed sizes, fallback ladder",
+    "bc_strategy": "What BCs, which step, which sets/surfaces",
+    "load_strategy": "What loads, which step, RP+coupling vs direct pressure",
+    "selection_strategy": "How entities will be selected (bounding box, sets, feature handles)",
+    "postprocessing": "What KPIs to extract, how (noGUI-safe odbAccess)"
+  }
+}
+This plan drives the script. Every decision in the code must trace back to the plan.
+
 ═══ CRITICAL RULES ═══
 - Use ONLY Abaqus/CAE Python API (abaqus, abaqusConstants, caeModules, etc.)
 - NO os/subprocess/socket/requests/eval/exec calls
 - NO network access, NO file deletion, NO system commands
 - Include proper imports: from abaqus import *, from abaqusConstants import *, from caeModules import *
+- ALL scripts must be noGUI-safe (no session.viewports, no visualization calls)
 
 ═══ MANDATORY BUILD ORDER (never deviate) ═══
 
@@ -613,11 +733,12 @@ Phase C — Analysis:
 Phase D — Discretization:
   D1. Mesh controls + element types (setElementType with proper Region)
   D2. Seeding (global seedPart → local seedEdgeBySize for refinement)
-  D3. Generate mesh + validate: assert len(p.elements) > 0
+  D3. Generate mesh using MESH LADDER + validate: REQUIRE(len(p.elements) > 0, ...)
 
-Phase E — Run:
+Phase E — Run + Postprocess:
   E1. Create job (delete existing if needed): mdb.Job(name='JOB_...', model='...')
   E2. job.submit(); job.waitForCompletion()
+  E3. (Optional) ODB postprocessing — extract KPIs, write CSV
 
 ═══ DETERMINISTIC NAMING STANDARD ═══
 Parts:       P_<NAME>           (e.g., P_L_BRACKET)
@@ -647,6 +768,46 @@ Jobs:        JOB_<MODEL>_<TEST>
 
 5. Index-based (NEVER): faces[0], geometry[4] — FORBIDDEN. Breaks on any geometry change.
 
+═══ MESH STRATEGY LADDER (mandatory for all scripts) ═══
+
+ALWAYS implement the mesh ladder in your script. This is NOT optional:
+
+\`\`\`python
+# ══ MESH LADDER ══
+MESH_LADDER = [
+    {'technique': SWEEP, 'elemShape': HEX, 'elemCode': 'C3D8R', 'label': 'HEX-sweep'},
+    {'technique': STRUCTURED, 'elemShape': HEX, 'elemCode': 'C3D8R', 'label': 'HEX-structured'},
+    {'technique': FREE, 'elemShape': TET, 'elemCode': 'C3D10', 'label': 'TET-free'},
+]
+
+mesh_success = False
+for rung in MESH_LADDER:
+    for seed_multiplier in [1.0, 1.5, 2.0]:
+        try:
+            p.setMeshControls(regions=p.cells[:], technique=rung['technique'], elemShape=rung['elemShape'])
+            elem_type = mesh.ElemType(elemCode=getattr(mesh, rung['elemCode']), elemLibrary=STANDARD)
+            p.setElementType(regions=(p.cells[:],), elemTypes=(elem_type,))
+            p.seedPart(size=PARAM['mesh_size'] * seed_multiplier, deviationFactor=0.1, minSizeFactor=0.1)
+            p.generateMesh()
+            REQUIRE(len(p.elements) > 0, 'Mesh generated 0 elements')
+            print('MESH OK: %s at seed=%.1f (%d elements)' % (rung['label'], PARAM['mesh_size'] * seed_multiplier, len(p.elements)))
+            mesh_success = True
+            break
+        except Exception as e_mesh:
+            print('MESH FAIL: %s at seed=%.1f — %s' % (rung['label'], PARAM['mesh_size'] * seed_multiplier, str(e_mesh)))
+            try:
+                p.deleteMesh()
+            except:
+                pass
+    if mesh_success:
+        break
+
+REQUIRE(mesh_success, 'All mesh strategies exhausted. Check geometry partitioning.')
+\`\`\`
+
+For 2D models, use the equivalent 2D ladder:
+  CPS8R (quad-structured) → CPS6M (tri-free) → coarser seed
+
 ═══ COMMON PITFALLS TO AVOID ═══
 - NEVER use referencePoints.keys()[index] — ordering is unstable
 - NEVER pass raw RP objects to Coupling controlPoint — must be Region(referencePoints=...)
@@ -655,10 +816,12 @@ Jobs:        JOB_<MODEL>_<TEST>
 - NEVER use influenceRegion=EVERYWHERE — use influenceRadius=WHOLE_SURFACE
 - NEVER use frictionCoefficient= in TangentialBehavior — use table=((mu,),) instead for cross-version compatibility
 - NEVER output more than ONE script per response — if you see a second 'from abaqus import *' mid-file, you are concatenating scripts
+- NEVER use session.viewports or any GUI-dependent calls — scripts must run noGUI
 - ALWAYS create sets/surfaces BEFORE referencing them in BCs/loads
-- ALWAYS validate mesh: assert len(p.elements) > 0 after generateMesh()
+- ALWAYS validate mesh: REQUIRE(len(p.elements) > 0, ...) after generateMesh()
 - ALWAYS import mesh module if using mesh.ElemType: import mesh
 - ALWAYS use seedPart() for global mesh size; seedEdgeBySize() ONLY for local refinement zones
+- ALWAYS close ODB handles after postprocessing: odb.close()
 
 ═══ CONTACT ENGAGEMENT RULE ═══
 If the model has friction contact + shear load, ALWAYS add a pre-engagement step:
@@ -675,6 +838,19 @@ Instead, raise RuntimeError in the PARAM validation section:
   - Units → raise RuntimeError('SPEC INCOMPLETE: Units not specified.')
 EXCEPTION: If the user says "steel" or "aluminum" etc. by name, you MAY use standard handbook values.
 EXCEPTION: Mesh seed size may be estimated from geometry (1/20th of shortest dimension).
+
+═══ UNIT CONSISTENCY (mandatory check) ═══
+Include this validation block in every script after PARAM:
+
+\`\`\`python
+# ══ UNIT CONSISTENCY CHECK ══
+if 'density' in PARAM:
+    # mm/N/MPa system: density in tonne/mm³ (e.g., steel = 7.85e-9)
+    # m/N/Pa system: density in kg/m³ (e.g., steel = 7850)
+    if PARAM.get('unit_system', 'mm') == 'mm' and PARAM['density'] > 1.0:
+        raise RuntimeError('UNIT ERROR: density=%.2f looks like kg/m³ but geometry is in mm. '
+                         'For mm/N/MPa, use tonne/mm³ (e.g., 7.85e-9 for steel).' % PARAM['density'])
+\`\`\`
 
 ═══ TOLERANCE POLICY ═══
 Use a single tolerance strategy for getByBoundingBox:
@@ -697,15 +873,100 @@ def SURF(assembly, name):
     REQUIRE(name in assembly.surfaces, 'Surface %s not found' % name)
     return assembly.surfaces[name]
 
-def CELLS_REGION(part):
-    """For setElementType, use (part.cells[:],) directly instead of this helper."""
-    import regionToolset
-    cells = part.cells[:]
-    REQUIRE(len(cells) > 0, 'No cells in part %s' % part.name)
-    return regionToolset.Region(cells=cells)
-
 NOTE: For setElementType, do NOT use CELLS_REGION(). Instead use:
   part.setElementType(regions=(part.cells[:],), elemTypes=(elemType,))
+
+═══ PRE-FLIGHT GATE (before job.submit) ═══
+Include this validation block before E1 (Job creation):
+
+\`\`\`python
+# ══ PRE-FLIGHT GATE ══
+model = mdb.models[MODEL_NAME]
+a = model.rootAssembly
+
+# G1: At least one non-Initial step
+non_initial_steps = [s for s in model.steps.keys() if s != 'Initial']
+REQUIRE(len(non_initial_steps) > 0, 'No non-Initial step defined')
+
+# G2: BCs exist
+REQUIRE(len(model.boundaryConditions) > 0, 'No boundary conditions defined — rigid body motion')
+
+# G3: Loads exist (unless modal/buckling)
+if '${analysisType}' not in ('modal', 'buckling'):
+    REQUIRE(len(model.loads) > 0, 'No loads defined')
+
+# G4: Mesh exists on all instances
+for inst_name, inst in a.instances.items():
+    REQUIRE(len(inst.elements) > 0, 'Instance %s has no mesh' % inst_name)
+
+# G5: Materials assigned
+REQUIRE(len(model.materials) > 0, 'No materials defined')
+
+# G6: Sections assigned (check via part)
+for part_name, part_obj in model.parts.items():
+    REQUIRE(len(part_obj.sectionAssignments) > 0, 'Part %s has no section assignment' % part_name)
+
+print('PRE-FLIGHT: All gates passed (%d steps, %d BCs, %d loads)' % (
+    len(non_initial_steps), len(model.boundaryConditions), len(model.loads)))
+\`\`\`
+
+═══ ODB POSTPROCESSING (noGUI-safe) ═══
+When the user requests results extraction or KPIs, include this pattern:
+
+\`\`\`python
+# ══ POSTPROCESSING (noGUI-safe) ══
+import odbAccess
+import csv
+
+odb_path = JOB_NAME + '.odb'
+odb = odbAccess.openOdb(path=odb_path, readOnly=True)
+
+try:
+    # Get last frame of last step
+    step_name = odb.steps.keys()[-1]
+    last_frame = odb.steps[step_name].frames[-1]
+
+    # Extract stress (Mises)
+    stress_field = last_frame.fieldOutputs['S']
+    mises_values = stress_field.getScalarField(invariant=MISES)
+    max_mises = max(v.data for v in mises_values.values)
+    print('KPI: Max von Mises stress = %.4f' % max_mises)
+
+    # Extract displacement
+    disp_field = last_frame.fieldOutputs['U']
+    max_u_mag = max(v.magnitude for v in disp_field.values)
+    min_u2 = min(v.data[1] for v in disp_field.values)  # min U2 = max downward
+    print('KPI: Max displacement magnitude = %.6f' % max_u_mag)
+    print('KPI: Max downward deflection (U2) = %.6f' % min_u2)
+
+    # Export to CSV
+    csv_path = JOB_NAME + '_results.csv'
+    with open(csv_path, 'w') as f:
+        writer = csv.writer(f)
+        writer.writerow(['NodeLabel', 'U1', 'U2', 'U3', 'U_Mag', 'S_Mises'])
+        for i, u_val in enumerate(disp_field.values):
+            s_val = mises_values.values[i] if i < len(mises_values.values) else None
+            writer.writerow([
+                u_val.nodeLabel,
+                u_val.data[0], u_val.data[1], u_val.data[2],
+                u_val.magnitude,
+                s_val.data if s_val else ''
+            ])
+    print('EXPORT: Results written to %s' % csv_path)
+
+finally:
+    odb.close()
+    print('ODB: Handle closed')
+\`\`\`
+
+═══ ABAQUS VERSION COMPATIBILITY MAP ═══
+Maintain cross-version safety:
+- Abaqus 2019: No ContactInitialization, use legacy contact
+- Abaqus 2020+: Python 3 syntax allowed
+- Abaqus 2022+: ContactInitialization available
+- Abaqus 2023+: Deprecated contactControls string references
+- All versions: Use table=((mu,),) for friction (safe everywhere)
+- All versions: Use influenceRadius=WHOLE_SURFACE (not influenceRegion=EVERYWHERE)
 
 ═══ MANDATORY RUNTIME SAFEGUARDS ═══
 
@@ -726,22 +987,11 @@ NOTE: For setElementType, do NOT use CELLS_REGION(). Instead use:
    d) Wrap in Region for couplings: region = RP_REGION(a, rp_obj)
    NEVER use referencePoints.keys() or referencePoints.values() iteration.
 
-3. MESH FALLBACK LOGIC — Wrap mesh generation in a try/except with a coarser fallback:
-   ✅ Pattern:
-     try:
-         p.seedPart(size=PARAM['mesh_size'], deviationFactor=0.1, minSizeFactor=0.1)
-         p.generateMesh()
-     except Exception as e_mesh:
-         print('WARNING: Mesh failed at size %.1f, retrying at %.1f — %s' % (PARAM['mesh_size'], PARAM['mesh_size']*2, str(e_mesh)))
-         p.seedPart(size=PARAM['mesh_size']*2, deviationFactor=0.1, minSizeFactor=0.1)
-         p.generateMesh()
-     REQUIRE(len(p.elements) > 0, 'No elements generated for part %s' % p.name)
+3. MESH LADDER — Use the MESH_LADDER pattern shown above. ALWAYS.
 
 4. STEP/LOAD DISCIPLINE:
    - NEVER assign loads to the 'Initial' step
    - All primary loads go into a named non-Initial step (e.g., STEP_LOAD)
-   - Validate: REQUIRE('STEP_LOAD' in model.steps or equivalent, 'Missing non-Initial step')
-   - Validate: REQUIRE(len(model.loads) > 0, 'No loads defined')
 
 5. CLEAR FAILURE MESSAGES — Wrap each major phase in try/except with a descriptive RuntimeError:
    ✅ Pattern:
@@ -755,7 +1005,7 @@ NOTE: For setElementType, do NOT use CELLS_REGION(). Instead use:
 
 ═══ SCRIPT STRUCTURE ═══
 Start with a PARAM dict at the top:
-  PARAM = dict(L=120.0, W=60.0, t=10.0, mesh_size=5.0, tol=0.05, ...)
+  PARAM = dict(L=120.0, W=60.0, t=10.0, mesh_size=5.0, tol=0.05, unit_system='mm', ...)
 
 Include parameter validation:
   assert PARAM['L'] > 0, 'Length must be positive'
@@ -763,13 +1013,40 @@ Include parameter validation:
 Include an artifact register:
   REG = {'sets': {}, 'surfaces': {}, 'rps': {}}
 
-Include helper functions (REQUIRE, RP_REGION, SURF, CELLS_REGION) immediately after PARAM and REG.
+Include helper functions (REQUIRE, RP_REGION, SURF) immediately after PARAM and REG.
+
+═══ SCRIPT MANIFEST (include as comments at end of script) ═══
+End every script with a manifest comment block:
+
+\`\`\`python
+# ═══════════════════════════════════════════════════════════
+# SCRIPT MANIFEST
+# ═══════════════════════════════════════════════════════════
+# Analysis Type: <type>
+# Geometry: <description of how geometry was built>
+# Selection Strategy: <bounding-box / feature-handle / sets>
+# Mesh Strategy: <MESH_LADDER used, element types attempted>
+# BC Summary: <list of BCs and which step>
+# Load Summary: <list of loads and which step>
+# KPIs Extracted: <list of KPIs if postprocessing included>
+# Version Target: <Abaqus version>
+# Unit System: <mm/N/MPa or m/N/Pa>
+# ═══════════════════════════════════════════════════════════
+\`\`\`
 
 ═══ RESPONSE FORMAT ═══
 Respond with valid JSON only. No markdown. No code fences. Just a JSON object:
 {
   "title": "Short descriptive title",
   "assumptions": ["List of assumptions made"],
+  "plan": {
+    "geometry_strategy": "...",
+    "mesh_strategy": "...",
+    "bc_strategy": "...",
+    "load_strategy": "...",
+    "selection_strategy": "...",
+    "postprocessing": "..."
+  },
   "script": "The complete Python script as a single string",
   "notes": ["Any important notes for the user"],
   "abaqus_version": "${options.abaqus_version || "2024"}",
@@ -859,16 +1136,30 @@ serve(async (req) => {
     const template = template_id && TEMPLATES[template_id] ? TEMPLATES[template_id] : null;
     const autoTemplate = !template && TEMPLATES[analysisType] ? TEMPLATES[analysisType] : template;
 
+    // Two-tier model chain: primary (strong reasoning) → fallback (fast)
     const MODEL_CHAIN = ["google/gemini-2.5-flash", "openai/gpt-5-mini", "google/gemini-2.5-flash-lite"];
     let lastRawResponse = "";
     let allIssues: string[] = [...missingReqWarnings];
     let finalData: ScriptSchema | null = null;
+    let usedModel = MODEL_CHAIN[0];
 
     for (let modelIdx = 0; modelIdx < MODEL_CHAIN.length; modelIdx++) {
       const model = MODEL_CHAIN[modelIdx];
+      
+      // Classify previous errors for targeted repair hints
+      let errorClassification: ErrorClassification | undefined;
+      if (modelIdx > 0 && allIssues.length > 0) {
+        const errorText = allIssues.join(" ");
+        const classified = classifyError(errorText);
+        if (classified) {
+          errorClassification = classified;
+          console.log(`Error classified as: ${classified.category} → ${classified.patchStrategy}`);
+        }
+      }
+
       const repairContext =
         modelIdx > 0
-          ? { previousIssues: allIssues.filter((i) => !i.startsWith("INFO:")), previousResponse: lastRawResponse }
+          ? { previousIssues: allIssues.filter((i) => !i.startsWith("INFO:")), previousResponse: lastRawResponse, errorClassification }
           : undefined;
 
       const systemPrompt = buildPrompt(prompt, analysisType, autoTemplate || null, options, repairContext, runtime_mode);
@@ -954,9 +1245,9 @@ serve(async (req) => {
       const lintIssues = lintScript(validation.data.script);
 
       // Accept the script — lint issues are returned as warnings, not blockers
-
       finalData = validation.data;
       allIssues = [...missingReqWarnings, ...lintIssues];
+      usedModel = model;
       break;
     }
 
@@ -1010,7 +1301,7 @@ serve(async (req) => {
           title: finalData.title,
           prompt_hash: promptHash,
           script_hash: scriptHash,
-          model: MODEL_CHAIN[0],
+          model: usedModel,
           latency_ms: latencyMs,
           success: true,
           issues: allIssues,
@@ -1027,7 +1318,9 @@ serve(async (req) => {
           analysis_type: analysisType,
           title: finalData.title,
           latency_ms: latencyMs,
+          model_used: usedModel,
           lint_issues: allIssues.length,
+          has_plan: !!finalData.plan,
         },
       });
     } catch (e) {

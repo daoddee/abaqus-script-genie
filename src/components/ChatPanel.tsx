@@ -17,6 +17,15 @@ interface ChatPanelProps {
   runtimeMode?: "py3" | "py27";
 }
 
+interface ModelPlan {
+  geometry_strategy: string;
+  mesh_strategy: string;
+  bc_strategy: string;
+  load_strategy: string;
+  selection_strategy: string;
+  postprocessing: string;
+}
+
 interface GenerateResponse {
   ok: boolean;
   data?: {
@@ -26,6 +35,7 @@ interface GenerateResponse {
     notes: string[];
     abaqus_version: string | null;
     units: string | null;
+    plan?: ModelPlan;
   };
   analysis_type?: string;
   issues?: string[];
