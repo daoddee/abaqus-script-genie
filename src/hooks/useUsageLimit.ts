@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { useAuth } from "./useAuth";
 
-const FREE_LIMIT = 5;
+const FREE_LIMIT = 3;
 const STORAGE_KEY = "abaqus_free_usage_count";
 
 function getLocalCount(): number {
