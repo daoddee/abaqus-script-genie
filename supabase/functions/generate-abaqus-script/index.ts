@@ -457,6 +457,83 @@ function checkPreFlightValidation(script: string): string[] {
     );
   }
 
+  // ── 9-Point: REG dictionary must have all keys ──
+  if (/REG\s*=\s*\{/.test(script)) {
+    const requiredKeys = ['sets', 'surfaces', 'rps', 'steps', 'bcs', 'loads', 'jobs', 'interactions'];
+    const missingKeys = requiredKeys.filter(k => !new RegExp(`['"]${k}['"]\\s*:`).test(script));
+    if (missingKeys.length > 0) {
+      issues.push(
+        `REG: Missing keys in REG dictionary: ${missingKeys.join(', ')}. Initialize ALL: sets, surfaces, rps, steps, bcs, loads, jobs, interactions.`
+      );
+    }
+  } else if (script.length > 500 && /ReferencePoint\s*\(/.test(script)) {
+    issues.push(
+      "REG: No REG dictionary found. Add: REG = {'sets': {}, 'surfaces': {}, 'rps': {}, 'steps': {}, 'bcs': {}, 'loads': {}, 'jobs': {}, 'interactions': {}}"
+    );
+  }
+
+  // ── 9-Point: Contact surface surgical precision ──
+  if (/SurfaceToSurfaceContactStd|SurfaceToSurfaceContactExp/.test(script)) {
+    if (/master\s*=\s*\w+\.surfaces\[.*faces\b/.test(script) || /instance\.faces\b/.test(script)) {
+      issues.push(
+        "CONTACT: Using broad instance.faces as contact surface. Select only the contact face via getByBoundingBox at the contact interface."
+      );
+    }
+    if (!/NormalBehavior/.test(script)) {
+      issues.push(
+        "CONTACT: Contact interaction defined but NormalBehavior not set. Add: interactionProperties[...].NormalBehavior(pressureOverclosure=HARD)"
+      );
+    }
+  }
+
+  // ── 9-Point: Section assignment coverage ──
+  if (/SectionAssignment/.test(script) && /cells\b/.test(script)) {
+    if (!/cells\s*\[\s*:\s*\]|cells\s*,/.test(script) && /SectionAssignment/.test(script)) {
+      issues.push(
+        "SECTION: SectionAssignment may not cover all cells. Use region=(p.cells[:],) to assign to entire part."
+      );
+    }
+  }
+
+  // ── 9-Point: nlgeom for contact/nonlinear ──
+  if (/SurfaceToSurfaceContactStd|SurfaceToSurfaceContactExp|contact/i.test(script)) {
+    if (/StaticStep\s*\(/.test(script) && !/nlgeom\s*=\s*ON/.test(script)) {
+      issues.push(
+        "NLGEOM: Contact model detected but nlgeom not explicitly set to ON. Add nlgeom=ON in StaticStep for contact analyses."
+      );
+    }
+  }
+
+  // ── 9-Point: Python 3 ODB access ──
+  if (/odb\.steps\.keys\s*\(\s*\)\s*\[/.test(script) && !/list\s*\(\s*odb\.steps/.test(script)) {
+    issues.push(
+      "PYTHON3: odb.steps.keys()[-1] is not subscriptable in Python 3. Use: list(odb.steps.keys())[-1]"
+    );
+  }
+
+  // ── 9-Point: AnalyticRigidSurf for rigid indenters ──
+  if (/ANALYTIC_RIGID|analytic.*rigid/i.test(script)) {
+    if (/BaseSolidExtrude/.test(script) && /ANALYTIC_RIGID_SURFACE/.test(script)) {
+      issues.push(
+        "GEOMETRY: Using BaseSolidExtrude for an ANALYTIC_RIGID_SURFACE part. Use AnalyticRigidSurfRevolve or AnalyticRigidSurf2DPlanar instead."
+      );
+    }
+  }
+
+  // ── 9-Point: CLEAN_SLATE option ──
+  if (script.length > 800 && !/CLEAN_SLATE/.test(script)) {
+    issues.push(
+      "INFO: No CLEAN_SLATE option. Add 'CLEAN_SLATE = True' with cleanup logic to delete existing models/jobs before re-runs."
+    );
+  }
+
+  // ── 9-Point: Structured log header ──
+  if (script.length > 500 && /PARAM\s*=\s*dict|PARAM\s*=\s*\{/.test(script) && !/ABAQUS MODEL BUILD LOG|BUILD LOG|Parameter Summary/i.test(script)) {
+    issues.push(
+      "INFO: No structured log header. Add a parameter summary print block at script start for traceability."
+    );
+  }
+
   return issues;
 }
 
@@ -972,7 +1049,7 @@ print('PRE-FLIGHT: All gates passed (%d steps, %d BCs, %d loads)' % (
     len(non_initial_steps), len(model.boundaryConditions), len(model.loads)))
 \`\`\`
 
-═══ ODB POSTPROCESSING (noGUI-safe) ═══
+═══ ODB POSTPROCESSING (noGUI-safe, Python 3 compatible) ═══
 When the user requests results extraction or KPIs, include this pattern:
 
 \`\`\`python
@@ -984,36 +1061,48 @@ odb_path = JOB_NAME + '.odb'
 odb = odbAccess.openOdb(path=odb_path, readOnly=True)
 
 try:
-    # Get last frame of last step
-    step_name = odb.steps.keys()[-1]
+    # Get last frame of last step — Python 3 safe
+    step_name = list(odb.steps.keys())[-1]
     last_frame = odb.steps[step_name].frames[-1]
 
-    # Extract stress (Mises)
+    # Extract stress (Mises) — element-based invariant
     stress_field = last_frame.fieldOutputs['S']
     mises_values = stress_field.getScalarField(invariant=MISES)
     max_mises = max(v.data for v in mises_values.values)
     print('KPI: Max von Mises stress = %.4f' % max_mises)
 
-    # Extract displacement
+    # Extract displacement — nodal-based
     disp_field = last_frame.fieldOutputs['U']
     max_u_mag = max(v.magnitude for v in disp_field.values)
-    min_u2 = min(v.data[1] for v in disp_field.values)  # min U2 = max downward
+    min_u2 = min(v.data[1] for v in disp_field.values)  # max downward
     print('KPI: Max displacement magnitude = %.6f' % max_u_mag)
     print('KPI: Max downward deflection (U2) = %.6f' % min_u2)
 
-    # Export to CSV
+    # Sanity check: warn if displacement > 10% of characteristic length
+    if max_u_mag > 0.1 * PARAM.get('L', 100.0):
+        print('WARNING: Displacement (%.4f) > 10%% of model length (%.1f). Check units/loads.' % (max_u_mag, PARAM.get('L', 100.0)))
+
+    # History region — search by key, don't hardcode
+    for hr_key in list(odb.steps[step_name].historyRegions.keys()):
+        if 'Node' in hr_key or 'RP' in hr_key.upper():
+            hr = odb.steps[step_name].historyRegions[hr_key]
+            for var_name in ('RF2', 'RF1', 'RF3'):
+                if var_name in hr.historyOutputs:
+                    rf_data = hr.historyOutputs[var_name].data
+                    print('KPI: %s final = %.4f' % (var_name, rf_data[-1][1]))
+            for var_name in ('U2', 'U1', 'U3'):
+                if var_name in hr.historyOutputs:
+                    u_data = hr.historyOutputs[var_name].data
+                    print('KPI: %s final = %.6f' % (var_name, u_data[-1][1]))
+            break
+
+    # Export nodal displacement to CSV (nodal data only — do NOT mix with element stress)
     csv_path = JOB_NAME + '_results.csv'
     with open(csv_path, 'w') as f:
         writer = csv.writer(f)
-        writer.writerow(['NodeLabel', 'U1', 'U2', 'U3', 'U_Mag', 'S_Mises'])
-        for i, u_val in enumerate(disp_field.values):
-            s_val = mises_values.values[i] if i < len(mises_values.values) else None
-            writer.writerow([
-                u_val.nodeLabel,
-                u_val.data[0], u_val.data[1], u_val.data[2],
-                u_val.magnitude,
-                s_val.data if s_val else ''
-            ])
+        writer.writerow(['NodeLabel', 'U1', 'U2', 'U3', 'U_Mag'])
+        for u_val in disp_field.values:
+            writer.writerow([u_val.nodeLabel, u_val.data[0], u_val.data[1], u_val.data[2], u_val.magnitude])
     print('EXPORT: Results written to %s' % csv_path)
 
 finally:
@@ -1096,6 +1185,149 @@ End every script with a manifest comment block:
 # ═══════════════════════════════════════════════════════════
 \`\`\`
 
+═══ ABAQUS SCRIPTING API REFERENCE (from official docs — use these patterns exactly) ═══
+
+--- Model + Part Creation ---
+from abaqus import *
+from abaqusConstants import *
+from caeModules import *
+import mesh, regionToolset
+
+myModel = mdb.Model(name='MODEL_NAME')
+s = myModel.ConstrainedSketch(name='__profile__', sheetSize=500.0)
+s.rectangle(point1=(0.0, 0.0), point2=(L, H))
+p = myModel.Part(name='P_BEAM', dimensionality=THREE_D, type=DEFORMABLE_BODY)
+p.BaseSolidExtrude(sketch=s, depth=W)
+
+--- Analytical Rigid Surface (Revolve for cylinder/sphere) ---
+s_rigid = myModel.ConstrainedSketch(name='__rigid__', sheetSize=500.0)
+s_rigid.Line(point1=(0.0, R), point2=(L_cyl, R))  # horizontal line at radius R
+p_rigid = myModel.Part(name='P_INDENTER', dimensionality=THREE_D, type=ANALYTIC_RIGID_SURFACE)
+p_rigid.AnalyticRigidSurfRevolve(sketch=s_rigid)   # revolves around Y-axis → cylinder
+rp_feat = p_rigid.ReferencePoint(point=(0.0, 0.0, 0.0))
+# For a sphere: sketch an arc, then revolve
+
+--- Material + Section ---
+mat = myModel.Material(name='MAT_STEEL')
+mat.Elastic(table=((E, nu),))
+mat.Density(table=((density,),))           # tonne/mm³ for mm system: 7.85e-9
+mat.Plastic(table=((yield_stress, 0.0),))  # optional
+myModel.HomogeneousSolidSection(name='SEC_SOLID', material='MAT_STEEL', thickness=None)
+region = (p.cells[:],)  # NOTE: tuple-wrapped cells with slice
+p.SectionAssignment(region=region, sectionName='SEC_SOLID')
+
+--- Assembly ---
+a = myModel.rootAssembly
+a.DatumCsysByDefault(CARTESIAN)
+i_beam = a.Instance(name='I_BEAM-1', part=p, dependent=ON)
+
+--- Sets + Surfaces (getByBoundingBox — preferred) ---
+tol = PARAM['tol']
+fixed_faces = i_beam.faces.getByBoundingBox(xMin=-tol, yMin=-tol, zMin=-tol,
+                                             xMax=tol, yMax=H+tol, zMax=W+tol)
+REQUIRE(len(fixed_faces) > 0, 'No faces found for SET_FIXED_END')
+a.Set(name='SET_FIXED_END', faces=fixed_faces)
+
+top_faces = i_beam.faces.getByBoundingBox(xMin=-tol, yMin=H-tol, zMin=-tol,
+                                           xMax=L+tol, yMax=H+tol, zMax=W+tol)
+REQUIRE(len(top_faces) > 0, 'No faces found for SURF_TOP')
+a.Surface(name='SURF_TOP', side1Faces=top_faces)
+
+--- Steps ---
+myModel.StaticStep(name='STEP_LOAD', previous='Initial', timePeriod=1.0,
+                   initialInc=0.1, maxInc=1.0, nlgeom=ON, description='Apply load')
+
+--- BCs + Loads ---
+myModel.EncastreBC(name='BC_FIXED', createStepName='Initial',
+                   region=a.sets['SET_FIXED_END'])
+myModel.Pressure(name='LOAD_PRESSURE', createStepName='STEP_LOAD',
+                 region=a.surfaces['SURF_TOP'], magnitude=pressure_val)
+
+--- Reference Point + Coupling ---
+rp_feat = a.ReferencePoint(point=(x, y, z))
+rp_obj = a.referencePoints[rp_feat.id]
+rp_region = regionToolset.Region(referencePoints=(rp_obj,))
+a.Set(name='SET_RP_LOAD', referencePoints=(rp_obj,))
+myModel.Coupling(name='CPL_LOAD', controlPoint=rp_region,
+                 surface=a.surfaces['SURF_TOP'],
+                 influenceRadius=WHOLE_SURFACE, couplingType=DISTRIBUTING)
+
+--- Contact Interaction ---
+myModel.ContactProperty('PROP_CONTACT')
+myModel.interactionProperties['PROP_CONTACT'].NormalBehavior(pressureOverclosure=HARD)
+myModel.interactionProperties['PROP_CONTACT'].TangentialBehavior(
+    formulation=PENALTY, table=((mu,),))   # cross-version safe
+myModel.SurfaceToSurfaceContactStd(name='INT_CONTACT', createStepName='STEP_LOAD',
+    master=a.surfaces['SURF_MASTER'], slave=a.surfaces['SURF_SLAVE'],
+    interactionProperty='PROP_CONTACT', sliding=FINITE)
+
+--- Output Requests ---
+myModel.FieldOutputRequest(name='F_OUT', createStepName='STEP_LOAD',
+    variables=('S', 'E', 'U', 'RF'))
+# Contact outputs:
+myModel.FieldOutputRequest(name='F_OUT_CONTACT', createStepName='STEP_LOAD',
+    variables=('CPRESS', 'COPEN', 'CSLIP'))
+# History output at RP:
+myModel.HistoryOutputRequest(name='H_OUT_RP', createStepName='STEP_LOAD',
+    region=a.sets['SET_RP_LOAD'], variables=('RF1', 'RF2', 'RF3', 'U1', 'U2', 'U3'))
+
+--- Mesh (part-level for dependent instances) ---
+p.setMeshControls(regions=p.cells[:], technique=SWEEP, elemShape=HEX)
+elem_type = mesh.ElemType(elemCode=C3D8R, elemLibrary=STANDARD)
+p.setElementType(regions=(p.cells[:],), elemTypes=(elem_type,))
+p.seedPart(size=mesh_size, deviationFactor=0.1, minSizeFactor=0.1)
+p.generateMesh()
+REQUIRE(len(p.elements) > 0, 'Mesh generated 0 elements')
+
+--- Job ---
+mdb.Job(name=JOB_NAME, model=MODEL_NAME, description='...', numCpus=1)
+if RUN_JOB:
+    mdb.jobs[JOB_NAME].submit()
+    mdb.jobs[JOB_NAME].waitForCompletion()
+    REQUIRE(str(mdb.jobs[JOB_NAME].status) == 'COMPLETED', 'Job did not complete')
+
+--- ODB Postprocessing (noGUI-safe, Python 3) ---
+import odbAccess
+odb = odbAccess.openOdb(path=JOB_NAME + '.odb', readOnly=True)
+try:
+    step_name = list(odb.steps.keys())[-1]     # Python 3 safe
+    last_frame = odb.steps[step_name].frames[-1]
+    stress_field = last_frame.fieldOutputs['S']
+    mises = stress_field.getScalarField(invariant=MISES)
+    max_mises = max(v.data for v in mises.values)
+    disp_field = last_frame.fieldOutputs['U']
+    max_u_mag = max(v.magnitude for v in disp_field.values)
+    # History region for RP:
+    for hr_key in odb.steps[step_name].historyRegions.keys():
+        if 'Node' in hr_key or 'RP' in hr_key.upper():
+            hr = odb.steps[step_name].historyRegions[hr_key]
+            if 'RF2' in hr.historyOutputs:
+                rf2_data = hr.historyOutputs['RF2'].data
+                print('RP RF2 final = %.4f' % rf2_data[-1][1])
+            break
+finally:
+    odb.close()
+
+═══ MATERIAL DEFINITIONS REFERENCE ═══
+Common materials (mm/N/MPa/tonne system):
+  Steel:     E=210000 MPa, nu=0.3,  density=7.85e-9 tonne/mm³, yield=250 MPa
+  Aluminum:  E=70000 MPa,  nu=0.33, density=2.7e-9  tonne/mm³, yield=270 MPa
+  Titanium:  E=110000 MPa, nu=0.34, density=4.43e-9 tonne/mm³, yield=880 MPa
+  Concrete:  E=30000 MPa,  nu=0.2,  density=2.4e-9  tonne/mm³
+  Copper:    E=120000 MPa, nu=0.34, density=8.96e-9 tonne/mm³, yield=70 MPa
+  Rubber:    Hyperelastic (Mooney-Rivlin or Neo-Hookean), density=1.1e-9
+
+For m/N/Pa system: E in Pa, density in kg/m³
+Always validate: if PARAM.get('unit_system','mm')=='mm' and density > 1.0: UNIT ERROR
+
+Material definition patterns:
+  mat.Elastic(table=((E, nu),))
+  mat.Density(table=((density,),))
+  mat.Plastic(table=((sigma_y, 0.0), (sigma_uts, eps_uts)))
+  mat.Expansion(table=((alpha,),))
+  Hyperelastic: mat.Hyperelastic(materialType=ISOTROPIC, testData=OFF,
+      type=MOONEY_RIVLIN, table=((C10, C01, D1),))
+
 ═══ STABILITY ENFORCEMENT ═══
 You MUST ensure the model is stable:
 - Prevent rigid body motion — verify at least one displacement constraint exists
@@ -1119,11 +1351,87 @@ Warn if displacement > 10% of model length.
 ═══ RUN READINESS REPORT (mandatory — always print at end) ═══
 Print: Model name, Step names, Element count, Node count, Set count, Job name, ODB status.
 
+═══ REG DICTIONARY (mandatory — initialize ALL keys) ═══
+Every script MUST initialize REG with ALL categories:
+REG = {'sets': {}, 'surfaces': {}, 'rps': {}, 'steps': {}, 'bcs': {}, 'loads': {},
+       'jobs': {}, 'interactions': {}, 'materials': {}, 'sections': {}}
+Register EVERY created artifact: REG['sets']['SET_FIXED_END'] = a.sets['SET_FIXED_END']
+This prevents KeyError and enables the Pre-flight Gate to validate all artifacts.
+
+═══ CLEAN_SLATE OPTION ═══
+At the top of every script, after PARAM, include:
+CLEAN_SLATE = True
+if CLEAN_SLATE:
+    if MODEL_NAME in mdb.models:
+        del mdb.models[MODEL_NAME]
+    for j in list(mdb.jobs.keys()):
+        if j.startswith('JOB_'):
+            del mdb.jobs[j]
+
+═══ RIGID BODY GEOMETRY RULES ═══
+- For cylindrical indenters: use AnalyticRigidSurfRevolve (revolve a horizontal line at radius R)
+  Do NOT use BaseSolidExtrude for rigid surfaces — it creates a deformable solid, not a rigid surface.
+- For flat punch: use AnalyticRigidSurf2DPlanar or Shell Planar
+- For sphere: revolve an arc
+- Always create RP on rigid part BEFORE assembly
+
+═══ CONTACT SURFACE SELECTION (surgical precision) ═══
+- NEVER use instance.faces as a contact surface — too broad, causes instability
+- For indenter: select only the bottom face using bounding box at Z_min after placement
+- For target body: select only the top face using bounding box at Y_max or Z_max
+- Validate: REQUIRE(len(surf_faces) == expected_count, 'Contact surface has %d faces, expected %d')
+- If count > expected, disambiguate by face normal:
+  selected = [f for f in faces if abs(f.getNormal()[axis] - expected_normal) < 0.1]
+
+═══ STEP ENGAGEMENT STRATEGY (contact problems) ═══
+For contact analyses, use deterministic step sequencing:
+1. STEP_SEAT:   StaticStep, small displacement (e.g., -0.1mm) to establish contact
+2. STEP_LOAD:   StaticStep, full loading
+Optional: SmoothStepAmplitude to avoid initial contact shock:
+  myModel.SmoothStepAmplitude(name='AMP_RAMP', timeSpan=STEP, data=((0,0),(1,1)))
+  # Apply via amplitude='AMP_RAMP' in load/BC definition
+
+═══ PARTITIONING FOR MESH QUALITY ═══
+Before meshing, partition geometry to enable structured/sweep meshing:
+  # Partition by datum plane
+  dp = p.DatumPlaneByPrincipalPlane(principalPlane=XYPLANE, offset=W/2)
+  p.PartitionCellByDatumPlane(datumPlane=p.datums[dp.id], cells=p.cells[:])
+  # After partitioning, cells may be swept/structured instead of free-TET
+This is the #1 meshing quality improvement. Always partition along load paths.
+
+═══ DEEP QUALITY GATE (before job.submit — engineering-grade) ═══
+Beyond existence checks, verify CORRECTNESS:
+G1: Contact pair exists AND property assigned
+G2: Rigid body RP is constrained (rigid body constraint or coupling exists)
+G3: Section assignment covers ALL cells: REQUIRE(len(p.sectionAssignments) > 0 and
+     sum(len(sa.region) for sa in p.sectionAssignments) == len(p.cells))
+G4: Output requests exist for KPI channels (S, U minimum)
+G5: nlgeom=ON for contact/large-deformation models
+G6: Contact surfaces are non-empty and face count matches expectation
+G7: Step incrementation is reasonable (initialInc <= maxInc, timePeriod > 0)
+
+═══ RESILIENT SELECTION (across geometry changes) ═══
+When using getByBoundingBox, validate results:
+- Check expected face count; if count > expected, disambiguate:
+  faces = [f for f in bbox_faces if f.getNormal() == expected_direction]
+- Log selection: print('SELECTION: %s found %d faces (expected %d)' % (name, len(faces), expected))
+- If 0 faces found, try with wider tolerance (2x, then 5x) before failing
+
+═══ STRUCTURED LOG HEADER ═══
+Every script should start with a parameter summary:
+print('='*60)
+print('ABAQUS MODEL BUILD LOG')
+print('='*60)
+for k, v in sorted(PARAM.items()):
+    print('  %-20s = %s' % (k, v))
+print('='*60)
+
 ═══ STRICT QUALITY GATE (self-check before returning) ═══
 Before returning JSON, internally verify: no undefined variables, no region misuse,
 all names from naming registry, all sets validated, mesh validated, job validated,
 RUN_JOB toggle present, output requests include S/E/U/RF,
-Run Readiness Report present, Script Manifest present.
+Run Readiness Report present, Script Manifest present,
+REG dictionary fully initialized, CLEAN_SLATE option present.
 If ANY fails, fix automatically before returning.
 
 ═══ BEHAVIOURAL STANDARD ═══
