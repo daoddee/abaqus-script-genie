@@ -395,6 +395,68 @@ function checkPreFlightValidation(script: string): string[] {
     );
   }
 
+  // ── Contract: RUN_JOB toggle ──
+  if (/Job\s*\(/.test(script) && !/RUN_JOB/.test(script)) {
+    issues.push(
+      "JOB CONTROL: Missing RUN_JOB toggle. Add 'RUN_JOB = True' at top and wrap submit/wait in 'if RUN_JOB:'."
+    );
+  }
+
+  // ── Contract: Output requests must include S, E, U, RF ──
+  if (/FieldOutputRequest/.test(script)) {
+    if (!/['"]RF['"]/.test(script)) {
+      issues.push(
+        "OUTPUT: FieldOutputRequest missing 'RF' (reaction forces). Add RF to field output variables."
+      );
+    }
+    if (!/['"]E['"]/.test(script)) {
+      issues.push(
+        "OUTPUT: FieldOutputRequest missing 'E' (strain). Add E to field output variables."
+      );
+    }
+  } else if (/Step\s*\(/.test(script)) {
+    issues.push(
+      "OUTPUT: No explicit FieldOutputRequest. Add: model.FieldOutputRequest(..., variables=('S', 'E', 'U', 'RF'))."
+    );
+  }
+
+  // ── Contract: Contact outputs ──
+  if (/Contact|contact|friction/i.test(script) && /FieldOutputRequest/.test(script)) {
+    if (!/CPRESS/.test(script)) {
+      issues.push(
+        "OUTPUT: Contact model detected but CPRESS/COPEN not in field outputs. Add contact output variables."
+      );
+    }
+  }
+
+  // ── Contract: History output for RP ──
+  if (/ReferencePoint\s*\(/.test(script) && !/HistoryOutputRequest/.test(script)) {
+    issues.push(
+      "OUTPUT: ReferencePoint exists but no HistoryOutputRequest. Add history output for RP reaction forces."
+    );
+  }
+
+  // ── Contract: Run Readiness Report ──
+  if (script.length > 500 && !/RUN READINESS REPORT|READINESS REPORT/i.test(script)) {
+    issues.push(
+      "INFO: Missing Run Readiness Report. Add a summary print block showing model, steps, elements, nodes, sets, job, ODB status."
+    );
+  }
+
+  // ── Contract: Job status verification ──
+  if (/\.submit\s*\(/.test(script) && !/job\.status|COMPLETED/.test(script)) {
+    issues.push(
+      "JOB CONTROL: Job submitted but status not verified. Add: REQUIRE(str(job.status) == 'COMPLETED', ...)."
+    );
+  }
+
+  // ── Contract: Stability check ──
+  if (/Step\s*\(/.test(script) && !/EncastreBC|DisplacementBC|PinnedBC|XsymmBC|YsymmBC|ZsymmBC/.test(script)) {
+    issues.push(
+      "STABILITY: No displacement BC found. Model will have rigid body motion. Add at least one constraining BC."
+    );
+  }
+
   return issues;
 }
 
@@ -1033,6 +1095,41 @@ End every script with a manifest comment block:
 # Unit System: <mm/N/MPa or m/N/Pa>
 # ═══════════════════════════════════════════════════════════
 \`\`\`
+
+═══ STABILITY ENFORCEMENT ═══
+You MUST ensure the model is stable:
+- Prevent rigid body motion — verify at least one displacement constraint exists
+- For contact models ensure normal behavior is defined
+- For RP couplings ensure region is defined correctly
+- If model is under-constrained, auto-add minimal stabilizing constraint and log it
+
+═══ OUTPUT REQUESTS (mandatory defaults) ═══
+Default field outputs MUST include: S, E, U, RF
+If contact exists, ALSO request: CPRESS, COPEN
+Add at least one HistoryOutputRequest if RP exists (reaction forces + displacements)
+
+═══ JOB CONTROL (mandatory pattern) ═══
+Include RUN_JOB = True at top. Wrap submit/wait in 'if RUN_JOB:'
+Verify job.status == COMPLETED and ODB file exists. Print diagnostics on failure.
+
+═══ POST-RUN ENGINEERING SANITY CHECKS ═══
+After completion: print max displacement, total reaction force.
+Warn if displacement > 10% of model length.
+
+═══ RUN READINESS REPORT (mandatory — always print at end) ═══
+Print: Model name, Step names, Element count, Node count, Set count, Job name, ODB status.
+
+═══ STRICT QUALITY GATE (self-check before returning) ═══
+Before returning JSON, internally verify: no undefined variables, no region misuse,
+all names from naming registry, all sets validated, mesh validated, job validated,
+RUN_JOB toggle present, output requests include S/E/U/RF,
+Run Readiness Report present, Script Manifest present.
+If ANY fails, fix automatically before returning.
+
+═══ BEHAVIOURAL STANDARD ═══
+You are NOT a code generator. You are a simulation engineer.
+Think: Model stability → Region robustness → Step correctness → Mesh validity → Solver readiness.
+Only then return final script.
 
 ═══ RESPONSE FORMAT ═══
 Respond with valid JSON only. No markdown. No code fences. Just a JSON object:
