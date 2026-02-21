@@ -1,8 +1,10 @@
 import { useState, useRef, useCallback } from "react";
 import logo from "@/assets/logo.png";
-import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal, Send, Bug, CreditCard, Code, MessageSquare } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal, Send, Bug, CreditCard, Code, MessageSquare, LogOut, User } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useAuth } from "@/hooks/useAuth";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import ChatPanel from "../components/ChatPanel";
 import ScriptPreview from "../components/ScriptPreview";
 import type { ArchivedScript } from "../components/ScriptPreview";
@@ -16,6 +18,7 @@ type RuntimeMode = "py3" | "py27";
 type MobileView = "chat" | "script";
 
 const Index = () => {
+  const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const [script, setScript] = useState("");
@@ -132,11 +135,32 @@ const Index = () => {
                 )}
               </div>
               <div className="p-3 border-t border-border space-y-2">
+                {/* Account details */}
+                {user && (
+                  <div className="flex items-center gap-2 px-2 py-1.5">
+                    <Avatar className="w-6 h-6">
+                      <AvatarImage src={user.user_metadata?.avatar_url} />
+                      <AvatarFallback className="text-[10px] bg-primary/10 text-primary">
+                        {(user.user_metadata?.full_name || user.email || "U").charAt(0).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-foreground truncate">{user.user_metadata?.full_name || "User"}</p>
+                      <p className="text-[10px] text-muted-foreground truncate">{user.email}</p>
+                    </div>
+                  </div>
+                )}
                 <button
                   onClick={() => navigate("/plans")}
                   className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
                 >
                   <CreditCard className="w-3.5 h-3.5" /> Plans & Billing
+                </button>
+                <button
+                  onClick={signOut}
+                  className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-xs text-destructive hover:bg-destructive/10 transition-colors"
+                >
+                  <LogOut className="w-3.5 h-3.5" /> Log out
                 </button>
                 <button
                   onClick={() => setRuntimeMode(runtimeMode === "py3" ? "py27" : "py3")}
@@ -259,12 +283,34 @@ const Index = () => {
           </div>
 
           <div className="p-3 border-t border-border space-y-2">
+            {/* Account details */}
+            {user && (
+              <div className="flex items-center gap-2 px-2 py-1.5">
+                <Avatar className="w-6 h-6">
+                  <AvatarImage src={user.user_metadata?.avatar_url} />
+                  <AvatarFallback className="text-[10px] bg-primary/10 text-primary">
+                    {(user.user_metadata?.full_name || user.email || "U").charAt(0).toUpperCase()}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-foreground truncate">{user.user_metadata?.full_name || "User"}</p>
+                  <p className="text-[10px] text-muted-foreground truncate">{user.email}</p>
+                </div>
+              </div>
+            )}
             <button
               onClick={() => navigate("/plans")}
               className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
               <CreditCard className="w-3.5 h-3.5" />
               Plans & Billing
+            </button>
+            <button
+              onClick={signOut}
+              className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-xs text-destructive hover:bg-destructive/10 transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              Log out
             </button>
             <button
               onClick={() => setRuntimeMode(runtimeMode === "py3" ? "py27" : "py3")}
