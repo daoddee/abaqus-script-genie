@@ -109,10 +109,74 @@ const BLOCKLIST = [
   /\bexec\s*\(/,
   /\b__import__\b/,
   /\bcompile\s*\(/,
-  /\bopen\s*\([^)]*['"][wa]/,
   /\bimport\s+ctypes\b/,
   /\bimport\s+sys\b.*\bsys\.exit\b/,
 ];
+
+// ── File IO Policy (replaces blanket open() block) ──
+const SAFE_WRITE_EXTENSIONS = ['.csv', '.txt', '.json', '.log', '.rpt', '.dat'];
+const SAFE_WRITE_DIR_PATTERN = /^\.\/?outputs?\//i;  // ./output/ or ./outputs/
+const FORBIDDEN_PATH_PATTERNS = [
+  /\.\.\//,                            // parent traversal
+  /^\/(?:home|etc|usr|var|tmp|root)/i, // system directories
+  /\.ssh/i,                            // SSH dirs
+  /^[A-Z]:\\/i,                        // Windows absolute paths
+  /^\/[A-Za-z]/,                       // Unix absolute paths
+];
+
+function checkFileIOPolicy(script: string): { severity: string; message: string }[] {
+  const issues: { severity: string; message: string }[] = [];
+  // Find all open() calls with write/append mode
+  const openWriteRegex = /\bopen\s*\(\s*([^,)]+)\s*,\s*['"]([^'"]*)['"]/g;
+  let match;
+  while ((match = openWriteRegex.exec(script)) !== null) {
+    const pathExpr = match[1].trim();
+    const mode = match[2];
+    const isWrite = /[wa+]/.test(mode);
+
+    if (!isWrite) continue; // read-only opens are always allowed
+
+    // Check for forbidden paths (literal strings only — variables get a WARN)
+    const pathStrMatch = pathExpr.match(/^['"]([^'"]+)['"]/);
+    if (pathStrMatch) {
+      const filePath = pathStrMatch[1];
+      // Check forbidden directories
+      for (const forbidden of FORBIDDEN_PATH_PATTERNS) {
+        if (forbidden.test(filePath)) {
+          issues.push({
+            severity: 'ERROR',
+            message: `FILE IO: Write to forbidden path "${filePath}" — writes must target ./outputs/ directory only.`,
+          });
+          break;
+        }
+      }
+      // Check extension allowlist
+      const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
+      if (ext && !SAFE_WRITE_EXTENSIONS.includes(ext)) {
+        issues.push({
+          severity: 'WARN',
+          message: `FILE IO: Write to "${filePath}" uses extension "${ext}" not in safe list (${SAFE_WRITE_EXTENSIONS.join(', ')}). Verify this is intended.`,
+        });
+      }
+      // Check directory — should be in outputs/
+      if (!SAFE_WRITE_DIR_PATTERN.test(filePath) && !/JOB_NAME|PARAM|odb_path|csv_path/i.test(pathExpr)) {
+        issues.push({
+          severity: 'WARN',
+          message: `FILE IO: Write to "${filePath}" is outside ./outputs/ directory. Consider using PARAM['output_dir'] for safe writes.`,
+        });
+      }
+    } else {
+      // Variable-based path — can't validate statically, emit advisory
+      if (!/JOB_NAME|csv_path|output_|results|PARAM\[/i.test(pathExpr)) {
+        issues.push({
+          severity: 'INFO',
+          message: `FILE IO: Write via variable path (${pathExpr.substring(0, 40)}) — ensure it resolves to a safe workspace directory at runtime.`,
+        });
+      }
+    }
+  }
+  return issues;
+}
 
 const REQUIRED_IMPORTS = [
   /from\s+abaqus\s+import\s+\*/,
@@ -190,12 +254,27 @@ const BUILD_ORDER_MARKERS = [
   { phase: "E1_job", pattern: /\.Job\s*\(/, label: "Job creation" },
 ];
 
-function checkBuildOrder(script: string): string[] {
-  const issues: string[] = [];
+// Strip comments, string literals, and docstrings to get executable-only code
+function stripNonExecutable(script: string): string {
+  // Remove triple-quoted strings (docstrings/multiline strings)
+  let cleaned = script.replace(/'''[\s\S]*?'''/g, '""');
+  cleaned = cleaned.replace(/"""[\s\S]*?"""/g, '""');
+  // Remove single-line comments
+  cleaned = cleaned.replace(/#[^\n]*/g, '');
+  // Remove string literals (preserve structure but blank content)
+  cleaned = cleaned.replace(/'[^'\n]*'/g, "''");
+  cleaned = cleaned.replace(/"[^"\n]*"/g, '""');
+  return cleaned;
+}
+
+function checkBuildOrder(script: string): { severity: string; message: string }[] {
+  const issues: { severity: string; message: string }[] = [];
+  // Parse only executable code — ignore comments, strings, manifest blocks
+  const executableCode = stripNonExecutable(script);
   const positions: { phase: string; pos: number; label: string }[] = [];
 
   for (const marker of BUILD_ORDER_MARKERS) {
-    const match = script.match(marker.pattern);
+    const match = executableCode.match(marker.pattern);
     if (match && match.index !== undefined) {
       positions.push({ phase: marker.phase, pos: match.index, label: marker.label });
     }
@@ -203,9 +282,10 @@ function checkBuildOrder(script: string): string[] {
 
   for (let i = 1; i < positions.length; i++) {
     if (positions[i].pos < positions[i - 1].pos) {
-      issues.push(
-        `BUILD ORDER: "${positions[i].label}" appears before "${positions[i - 1].label}" — this will likely cause runtime errors.`
-      );
+      issues.push({
+        severity: 'WARN',
+        message: `BUILD ORDER: "${positions[i].label}" appears before "${positions[i - 1].label}" — verify execution sequence is correct.`,
+      });
     }
   }
 
@@ -637,39 +717,66 @@ function checkVersionCompatibility(script: string): string[] {
 function lintScript(script: string): string[] {
   const issues: string[] = [];
 
+  // Helper: classify severity from message prefix
+  function classifySeverity(msg: string): string {
+    if (/^BANNED:|^Blocked|^Missing required import/.test(msg)) return 'ERROR';
+    if (/^Missing \w+ definition/.test(msg)) return 'ERROR';
+    if (/^SELECTION:.*index-based|^REGION:|^CONTACT:.*NormalBehavior|^NLGEOM:|^STABILITY:|^STEP\/LOAD:.*Initial|^PYTHON3:|^UNIT:|^noGUI:|^JOB CONTROL:.*Missing RUN_JOB/.test(msg)) return 'ERROR';
+    if (/^PRE-FLIGHT:|^SELECTION:|^OUTPUT:|^REG:|^CONTACT:|^SECTION:|^MESH:|^BUILD ORDER:|^RP HANDLING:|^JOB CONTROL:|^ODB:|^VERSION:/.test(msg)) return 'WARN';
+    if (/^INFO:/.test(msg)) return 'INFO';
+    return 'WARN';
+  }
+
   // Required imports
   for (const pattern of REQUIRED_IMPORTS) {
     if (!pattern.test(script)) {
-      issues.push(`Missing required import: ${pattern.source}`);
+      issues.push(`[ERROR] Missing required import: ${pattern.source}`);
     }
   }
 
-  // Blocklist
+  // Blocklist (dangerous operations — always ERROR)
   for (const pattern of BLOCKLIST) {
     if (pattern.test(script)) {
-      issues.push(`Blocked dangerous operation: ${pattern.source}`);
+      issues.push(`[ERROR] Blocked dangerous operation: ${pattern.source}`);
     }
   }
 
   // Structure checks
   for (const [name, pattern] of Object.entries(STRUCTURE_CHECKS)) {
     if (!pattern.test(script)) {
-      issues.push(`Missing ${name} definition — script may be incomplete.`);
+      issues.push(`[ERROR] Missing ${name} definition — script may be incomplete.`);
     }
   }
 
-  // All check suites
-  issues.push(...checkBuildOrder(script));
-  issues.push(...checkSelectionStrategy(script));
-  issues.push(...checkRegionTypes(script));
-  issues.push(...checkContactEngagement(script));
-  issues.push(...checkNamingConventions(script));
-  issues.push(...checkPreFlightValidation(script));
-  issues.push(...checkBannedPatterns(script));
-  issues.push(...checkMeshDiscipline(script));
-  issues.push(...checkStepLoadDiscipline(script));
-  issues.push(...checkAntiDefault(script));
-  issues.push(...checkVersionCompatibility(script));
+  // File IO policy (severity-aware)
+  for (const issue of checkFileIOPolicy(script)) {
+    issues.push(`[${issue.severity}] ${issue.message}`);
+  }
+
+  // Build order (severity-aware — uses executable code only)
+  for (const issue of checkBuildOrder(script)) {
+    issues.push(`[${issue.severity}] ${issue.message}`);
+  }
+
+  // All legacy check suites — auto-classify severity
+  const legacySuites = [
+    checkSelectionStrategy(script),
+    checkRegionTypes(script),
+    checkContactEngagement(script),
+    checkNamingConventions(script),
+    checkPreFlightValidation(script),
+    checkBannedPatterns(script),
+    checkMeshDiscipline(script),
+    checkStepLoadDiscipline(script),
+    checkAntiDefault(script),
+    checkVersionCompatibility(script),
+  ];
+  for (const suite of legacySuites) {
+    for (const msg of suite) {
+      const severity = classifySeverity(msg);
+      issues.push(`[${severity}] ${msg}`);
+    }
+  }
 
   return issues;
 }
@@ -845,6 +952,18 @@ This plan drives the script. Every decision in the code must trace back to the p
 - NO network access, NO file deletion, NO system commands
 - Include proper imports: from abaqus import *, from abaqusConstants import *, from caeModules import *
 - ALL scripts must be noGUI-safe (no session.viewports, no visualization calls)
+
+═══ FILE IO POLICY (important — replaces old open() ban) ═══
+open() is ALLOWED under these rules:
+- READ-ONLY opens (mode='r') are permitted anywhere
+- WRITE opens (mode='w'/'a') are permitted ONLY to:
+  - Files in a workspace output directory (e.g., './outputs/')
+  - Files with safe extensions: .csv, .txt, .json, .log, .rpt, .dat
+  - Dynamic paths using JOB_NAME or PARAM['output_dir'] variables
+- FORBIDDEN writes: absolute paths, parent traversal (../), system dirs (/home, /etc, .ssh)
+- Always use PARAM['output_dir'] for write paths:
+  PARAM['output_dir'] = './outputs/'
+  csv_path = PARAM['output_dir'] + JOB_NAME + '_results.csv'
 
 ═══ MANDATORY BUILD ORDER (never deviate) ═══
 
