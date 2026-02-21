@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback } from "react";
 import logo from "@/assets/logo.png";
-import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal, Send, Bug, CreditCard } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal, Send, Bug, CreditCard, Code, MessageSquare } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useIsMobile } from "@/hooks/use-mobile";
 import ChatPanel from "../components/ChatPanel";
 import ScriptPreview from "../components/ScriptPreview";
 import type { ArchivedScript } from "../components/ScriptPreview";
@@ -12,15 +13,18 @@ import DebugPanel from "../components/DebugPanel";
 type SidebarTab = "templates" | "history";
 type MiddleTab = "prompt" | "debug";
 type RuntimeMode = "py3" | "py27";
+type MobileView = "chat" | "script";
 
 const Index = () => {
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [script, setScript] = useState("");
   const [archivedScripts, setArchivedScripts] = useState<ArchivedScript[]>([]);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(!isMobile);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("templates");
   const [middleTab, setMiddleTab] = useState<MiddleTab>("prompt");
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("py3");
+  const [mobileView, setMobileView] = useState<MobileView>("chat");
   const scriptNameRef = useRef("abaqus_script.py");
   const activePromptRef = useRef<string | null>(null);
   const chatRef = useRef<{ setInput: (val: string) => void } | null>(null);
@@ -44,7 +48,9 @@ const Index = () => {
       activePromptRef.current = prompt;
     }
     setScript(newScript);
-  }, [script]);
+    // Auto-switch to script view on mobile when generated
+    if (isMobile) setMobileView("script");
+  }, [script, isMobile]);
 
   const handleTemplateSelect = (prompt: string) => {
     const inputEl = document.querySelector<HTMLInputElement>(
@@ -59,8 +65,148 @@ const Index = () => {
       inputEl.dispatchEvent(new Event("input", { bubbles: true }));
       inputEl.focus();
     }
+    if (isMobile) {
+      setSidebarOpen(false);
+      setMobileView("chat");
+    }
   };
 
+  // ── Mobile Layout ──
+  if (isMobile) {
+    return (
+      <div className="flex flex-col h-screen bg-background overflow-hidden">
+        {/* Mobile header */}
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-border bg-card shrink-0">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {sidebarOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
+            </button>
+            <img src={logo} alt="Abaqus AI" className="w-6 h-6 rounded" />
+            <span className="text-sm font-semibold text-foreground">Abaqus AI</span>
+          </div>
+          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+            runtimeMode === "py3"
+              ? "bg-primary/15 text-primary border border-primary/20"
+              : "bg-amber-500/15 text-amber-400 border border-amber-500/20"
+          }`}>
+            {runtimeMode === "py3" ? "Py3" : "Py2.7"}
+          </span>
+        </div>
+
+        {/* Mobile sidebar overlay */}
+        {sidebarOpen && (
+          <div className="absolute inset-0 z-50 flex">
+            <div className="w-72 bg-card border-r border-border flex flex-col h-full shadow-xl">
+              <div className="flex items-center justify-between px-3 py-3 border-b border-border">
+                <span className="text-sm font-semibold text-foreground">Menu</span>
+                <button onClick={() => setSidebarOpen(false)} className="text-muted-foreground hover:text-foreground">
+                  <PanelLeftClose className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="flex border-b border-border">
+                <button
+                  onClick={() => setSidebarTab("templates")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    sidebarTab === "templates" ? "text-primary border-b-2 border-primary" : "text-muted-foreground"
+                  }`}
+                >
+                  <BookOpen className="w-3.5 h-3.5" /> Templates
+                </button>
+                <button
+                  onClick={() => setSidebarTab("history")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors ${
+                    sidebarTab === "history" ? "text-primary border-b-2 border-primary" : "text-muted-foreground"
+                  }`}
+                >
+                  <History className="w-3.5 h-3.5" /> History
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto scrollbar-thin">
+                {sidebarTab === "templates" ? (
+                  <TemplatePanel onSelectTemplate={handleTemplateSelect} />
+                ) : (
+                  <HistorySidebar />
+                )}
+              </div>
+              <div className="p-3 border-t border-border space-y-2">
+                <button
+                  onClick={() => navigate("/plans")}
+                  className="flex items-center gap-2 w-full px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                >
+                  <CreditCard className="w-3.5 h-3.5" /> Plans & Billing
+                </button>
+                <button
+                  onClick={() => setRuntimeMode(runtimeMode === "py3" ? "py27" : "py3")}
+                  className="flex items-center justify-between w-full px-2 py-1.5 rounded-md bg-muted/60 border border-border hover:bg-muted transition-colors"
+                >
+                  <span className="text-xs text-muted-foreground">Runtime</span>
+                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                    runtimeMode === "py3"
+                      ? "bg-primary/15 text-primary border border-primary/20"
+                      : "bg-amber-500/15 text-amber-400 border border-amber-500/20"
+                  }`}>
+                    {runtimeMode === "py3" ? "Python 3.x" : "Python 2.7"}
+                  </span>
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 bg-black/40" onClick={() => setSidebarOpen(false)} />
+          </div>
+        )}
+
+        {/* Mobile content area */}
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+          {mobileView === "chat" ? (
+            <ChatPanel onScriptGenerated={handleScriptGenerated} runtimeMode={runtimeMode} />
+          ) : (
+            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              <div className="flex items-center px-4 py-2 border-b border-border">
+                <h2 className="text-sm font-semibold text-foreground">Script Preview</h2>
+                {script && (
+                  <span className="ml-2 px-1.5 py-0.5 text-[10px] font-mono rounded bg-success/15 text-success border border-success/20">
+                    READY
+                  </span>
+                )}
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <ScriptPreview script={script} archivedScripts={archivedScripts} onScriptUpdate={setScript} />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Mobile bottom tab bar */}
+        <div className="flex border-t border-border bg-card shrink-0">
+          <button
+            onClick={() => setMobileView("chat")}
+            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors ${
+              mobileView === "chat" ? "text-primary" : "text-muted-foreground"
+            }`}
+          >
+            <MessageSquare className="w-5 h-5" />
+            Chat
+          </button>
+          <button
+            onClick={() => setMobileView("script")}
+            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors ${
+              mobileView === "script" ? "text-primary" : "text-muted-foreground"
+            }`}
+          >
+            <Code className="w-5 h-5" />
+            Script
+            {script && (
+              <span className="w-1.5 h-1.5 rounded-full bg-success absolute -mt-1 ml-4" />
+            )}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Desktop Layout ──
   return (
     <div className="flex h-screen bg-background overflow-hidden">
       {/* Left Sidebar */}
@@ -155,7 +301,6 @@ const Index = () => {
                 <PanelLeftOpen className="w-4 h-4" />
               </button>
             )}
-            {/* Tab switcher */}
             <div className="flex items-center gap-0.5 bg-muted rounded-md p-0.5">
               <button
                 onClick={() => setMiddleTab("prompt")}

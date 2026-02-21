@@ -1313,263 +1313,42 @@ else:
 # ═══════════════════════════════════════════════════════════
 \`\`\`
 
-═══ ABAQUS SCRIPTING API REFERENCE (from official docs — use these patterns exactly) ═══
+═══ KEY API PATTERNS (use these exact patterns) ═══
 
---- Model + Part Creation ---
-from abaqus import *
-from abaqusConstants import *
-from caeModules import *
-import mesh, regionToolset
+Imports: from abaqus import *; from abaqusConstants import *; from caeModules import *; import mesh, regionToolset
+Model: mdb.Model(name=MODEL_NAME)
+Sketch+Part: s=m.ConstrainedSketch(...); p=m.Part(name='P_X', dimensionality=THREE_D, type=DEFORMABLE_BODY); p.BaseSolidExtrude(sketch=s, depth=W)
+2D Part: p=m.Part(name='P_X', dimensionality=TWO_D_PLANAR, type=DEFORMABLE_BODY); p.BaseShell(sketch=s)
+Rigid: p=m.Part(..., type=ANALYTIC_RIGID_SURFACE); p.AnalyticRigidSurfRevolve(sketch=s)
+Material: mat=m.Material('MAT_X'); mat.Elastic(table=((E,nu),)); mat.Density(table=((rho,),))
+Section: m.HomogeneousSolidSection(name='SEC_X', material='MAT_X', thickness=None)
+SectionAssignment: region=regionToolset.Region(cells=p.cells[:]); p.SectionAssignment(region=region, sectionName='SEC_X')
+Assembly: a=m.rootAssembly; a.DatumCsysByDefault(CARTESIAN); inst=a.Instance(name='I_X-1', part=p, dependent=ON)
+BBox selection: faces=inst.faces.getByBoundingBox(xMin=-tol,...); REQUIRE(len(faces)>0,'msg')
+Sets: a.Set(name='SET_X', faces=faces); Surfaces: a.Surface(name='SURF_X', side1Faces=faces)
+Step: m.StaticStep(name='STEP_X', previous='Initial', nlgeom=ON)
+BC: m.EncastreBC(name='BC_X', createStepName='Initial', region=a.sets['SET_X'])
+Load: m.Pressure(name='LOAD_X', createStepName='STEP_X', region=a.surfaces['SURF_X'], magnitude=val)
+RP: rp=a.ReferencePoint(point=(x,y,z)); rp_obj=a.referencePoints[rp.id]; rp_region=regionToolset.Region(referencePoints=(rp_obj,))
+Coupling: m.Coupling(name='CPL_X', controlPoint=rp_region, surface=a.surfaces['SURF_X'], influenceRadius=WHOLE_SURFACE, couplingType=DISTRIBUTING)
+Contact: m.ContactProperty('PROP_X'); m.interactionProperties['PROP_X'].NormalBehavior(pressureOverclosure=HARD); .TangentialBehavior(formulation=PENALTY, table=((mu,),))
+Output: m.FieldOutputRequest(name='F_OUT', createStepName='STEP_X', variables=('S','E','U','RF'))
+Mesh: p.setMeshControls(regions=p.cells[:], technique=SWEEP, elemShape=HEX); elem_type=mesh.ElemType(elemCode=C3D8R, elemLibrary=STANDARD); p.setElementType(regions=(p.cells[:],), elemTypes=(elem_type,)); p.seedPart(size=sz); p.generateMesh()
+Job: mdb.Job(name=JOB_NAME, model=MODEL_NAME); if RUN_JOB: mdb.jobs[JOB_NAME].submit(); mdb.jobs[JOB_NAME].waitForCompletion()
 
-myModel = mdb.Model(name='MODEL_NAME')
-s = myModel.ConstrainedSketch(name='__profile__', sheetSize=500.0)
-s.rectangle(point1=(0.0, 0.0), point2=(L, H))
-p = myModel.Part(name='P_BEAM', dimensionality=THREE_D, type=DEFORMABLE_BODY)
-p.BaseSolidExtrude(sketch=s, depth=W)
+═══ MATERIAL REFERENCE (mm/N/MPa/tonne) ═══
+Steel: E=210000, nu=0.3, rho=7.85e-9, yield=250
+Aluminum: E=70000, nu=0.33, rho=2.7e-9, yield=270
+Titanium: E=110000, nu=0.34, rho=4.43e-9, yield=880
 
---- Analytical Rigid Surface (Revolve for cylinder/sphere) ---
-s_rigid = myModel.ConstrainedSketch(name='__rigid__', sheetSize=500.0)
-s_rigid.Line(point1=(0.0, R), point2=(L_cyl, R))  # horizontal line at radius R
-p_rigid = myModel.Part(name='P_INDENTER', dimensionality=THREE_D, type=ANALYTIC_RIGID_SURFACE)
-p_rigid.AnalyticRigidSurfRevolve(sketch=s_rigid)   # revolves around Y-axis → cylinder
-rp_feat = p_rigid.ReferencePoint(point=(0.0, 0.0, 0.0))
-# For a sphere: sketch an arc, then revolve
-
---- Material + Section ---
-mat = myModel.Material(name='MAT_STEEL')
-mat.Elastic(table=((E, nu),))
-mat.Density(table=((density,),))           # tonne/mm³ for mm system: 7.85e-9
-mat.Plastic(table=((yield_stress, 0.0),))  # optional
-myModel.HomogeneousSolidSection(name='SEC_SOLID', material='MAT_STEEL', thickness=None)
-import regionToolset
-sec_region = regionToolset.Region(cells=p.cells[:])
-p.SectionAssignment(region=sec_region, sectionName='SEC_SOLID')
-
---- Assembly ---
-a = myModel.rootAssembly
-a.DatumCsysByDefault(CARTESIAN)
-i_beam = a.Instance(name='I_BEAM-1', part=p, dependent=ON)
-
---- Sets + Surfaces (getByBoundingBox — preferred) ---
-tol = PARAM['tol']
-fixed_faces = i_beam.faces.getByBoundingBox(xMin=-tol, yMin=-tol, zMin=-tol,
-                                             xMax=tol, yMax=H+tol, zMax=W+tol)
-REQUIRE(len(fixed_faces) > 0, 'No faces found for SET_FIXED_END')
-a.Set(name='SET_FIXED_END', faces=fixed_faces)
-
-top_faces = i_beam.faces.getByBoundingBox(xMin=-tol, yMin=H-tol, zMin=-tol,
-                                           xMax=L+tol, yMax=H+tol, zMax=W+tol)
-REQUIRE(len(top_faces) > 0, 'No faces found for SURF_TOP')
-a.Surface(name='SURF_TOP', side1Faces=top_faces)
-
---- Steps ---
-myModel.StaticStep(name='STEP_LOAD', previous='Initial', timePeriod=1.0,
-                   initialInc=0.1, maxInc=1.0, nlgeom=ON, description='Apply load')
-
---- BCs + Loads ---
-myModel.EncastreBC(name='BC_FIXED', createStepName='Initial',
-                   region=a.sets['SET_FIXED_END'])
-myModel.Pressure(name='LOAD_PRESSURE', createStepName='STEP_LOAD',
-                 region=a.surfaces['SURF_TOP'], magnitude=pressure_val)
-
---- Reference Point + Coupling ---
-rp_feat = a.ReferencePoint(point=(x, y, z))
-rp_obj = a.referencePoints[rp_feat.id]
-rp_region = regionToolset.Region(referencePoints=(rp_obj,))
-a.Set(name='SET_RP_LOAD', referencePoints=(rp_obj,))
-myModel.Coupling(name='CPL_LOAD', controlPoint=rp_region,
-                 surface=a.surfaces['SURF_TOP'],
-                 influenceRadius=WHOLE_SURFACE, couplingType=DISTRIBUTING)
-
---- Contact Interaction ---
-myModel.ContactProperty('PROP_CONTACT')
-myModel.interactionProperties['PROP_CONTACT'].NormalBehavior(pressureOverclosure=HARD)
-myModel.interactionProperties['PROP_CONTACT'].TangentialBehavior(
-    formulation=PENALTY, table=((mu,),))   # cross-version safe
-myModel.SurfaceToSurfaceContactStd(name='INT_CONTACT', createStepName='STEP_LOAD',
-    master=a.surfaces['SURF_MASTER'], slave=a.surfaces['SURF_SLAVE'],
-    interactionProperty='PROP_CONTACT', sliding=FINITE)
-
---- Output Requests ---
-myModel.FieldOutputRequest(name='F_OUT', createStepName='STEP_LOAD',
-    variables=('S', 'E', 'U', 'RF'))
-# Contact outputs:
-myModel.FieldOutputRequest(name='F_OUT_CONTACT', createStepName='STEP_LOAD',
-    variables=('CPRESS', 'COPEN', 'CSLIP'))
-# History output at RP:
-myModel.HistoryOutputRequest(name='H_OUT_RP', createStepName='STEP_LOAD',
-    region=a.sets['SET_RP_LOAD'], variables=('RF1', 'RF2', 'RF3', 'U1', 'U2', 'U3'))
-
---- Mesh (part-level for dependent instances) ---
-p.setMeshControls(regions=p.cells[:], technique=SWEEP, elemShape=HEX)
-elem_type = mesh.ElemType(elemCode=C3D8R, elemLibrary=STANDARD)
-p.setElementType(regions=(p.cells[:],), elemTypes=(elem_type,))
-p.seedPart(size=mesh_size, deviationFactor=0.1, minSizeFactor=0.1)
-p.generateMesh()
-REQUIRE(len(p.elements) > 0, 'Mesh generated 0 elements')
-
---- Job ---
-mdb.Job(name=JOB_NAME, model=MODEL_NAME, description='...', numCpus=1)
-if RUN_JOB:
-    mdb.jobs[JOB_NAME].submit()
-    mdb.jobs[JOB_NAME].waitForCompletion()
-    REQUIRE(str(mdb.jobs[JOB_NAME].status) == 'COMPLETED', 'Job did not complete')
-
---- ODB Postprocessing (noGUI-safe, Python 3, defensive) ---
-# CRITICAL: Always use try/except/finally — NEVER try/finally/except (syntax error).
-import os, odbAccess
-odb = None
-odb_path = JOB_NAME + '.odb'
-if os.path.exists(odb_path):
-    try:
-        odb = odbAccess.openOdb(path=odb_path, readOnly=True)
-        step_keys = list(odb.steps.keys())
-        if len(step_keys) > 0:
-            last_frame = odb.steps[step_keys[-1]].frames[-1]
-            fo = last_frame.fieldOutputs
-            if 'S' in fo and len(fo['S'].values) > 0:
-                max_mises = max(v.data for v in fo['S'].getScalarField(invariant=MISES).values)
-                print('KPI: Max Mises = %.4f' % max_mises)
-            if 'U' in fo and len(fo['U'].values) > 0:
-                max_u_mag = max(v.magnitude for v in fo['U'].values)
-                print('KPI: Max U mag = %.6f' % max_u_mag)
-    except Exception as e_odb:
-        print('POST: ODB error — %s' % str(e_odb))
-    finally:
-        if odb is not None:
-            odb.close()
-
-═══ MATERIAL DEFINITIONS REFERENCE ═══
-Common materials (mm/N/MPa/tonne system):
-  Steel:     E=210000 MPa, nu=0.3,  density=7.85e-9 tonne/mm³, yield=250 MPa
-  Aluminum:  E=70000 MPa,  nu=0.33, density=2.7e-9  tonne/mm³, yield=270 MPa
-  Titanium:  E=110000 MPa, nu=0.34, density=4.43e-9 tonne/mm³, yield=880 MPa
-  Concrete:  E=30000 MPa,  nu=0.2,  density=2.4e-9  tonne/mm³
-  Copper:    E=120000 MPa, nu=0.34, density=8.96e-9 tonne/mm³, yield=70 MPa
-  Rubber:    Hyperelastic (Mooney-Rivlin or Neo-Hookean), density=1.1e-9
-
-For m/N/Pa system: E in Pa, density in kg/m³
-Always validate: if PARAM.get('unit_system','mm')=='mm' and density > 1.0: UNIT ERROR
-
-Material definition patterns:
-  mat.Elastic(table=((E, nu),))
-  mat.Density(table=((density,),))
-  mat.Plastic(table=((sigma_y, 0.0), (sigma_uts, eps_uts)))
-  mat.Expansion(table=((alpha,),))
-  Hyperelastic: mat.Hyperelastic(materialType=ISOTROPIC, testData=OFF,
-      type=MOONEY_RIVLIN, table=((C10, C01, D1),))
-
-═══ STABILITY ENFORCEMENT ═══
-You MUST ensure the model is stable:
-- Prevent rigid body motion — verify at least one displacement constraint exists
-- For contact models ensure normal behavior is defined
-- For RP couplings ensure region is defined correctly
-- If model is under-constrained, auto-add minimal stabilizing constraint and log it
-
-═══ OUTPUT REQUESTS (mandatory defaults) ═══
-Default field outputs MUST include: S, E, U, RF
-If contact exists, ALSO request: CPRESS, COPEN
-Add at least one HistoryOutputRequest if RP exists (reaction forces + displacements)
-
-═══ JOB CONTROL (mandatory pattern) ═══
-Include RUN_JOB = True at top. Wrap submit/wait in 'if RUN_JOB:'
-Verify job.status == COMPLETED and ODB file exists. Print diagnostics on failure.
-
-═══ POST-RUN ENGINEERING SANITY CHECKS ═══
-After completion: print max displacement, total reaction force.
-Warn if displacement > 10% of model length.
-
-═══ RUN READINESS REPORT (mandatory — always print at end) ═══
-Print: Model name, Step names, Element count, Node count, Set count, Job name, ODB status.
-
-═══ REG DICTIONARY (mandatory — initialize ALL keys) ═══
-Every script MUST initialize REG with ALL categories:
-REG = {'sets': {}, 'surfaces': {}, 'rps': {}, 'steps': {}, 'bcs': {}, 'loads': {},
-       'jobs': {}, 'interactions': {}, 'materials': {}, 'sections': {}}
-Register EVERY created artifact: REG['sets']['SET_FIXED_END'] = a.sets['SET_FIXED_END']
-This prevents KeyError and enables the Pre-flight Gate to validate all artifacts.
-
-═══ CLEAN_SLATE OPTION ═══
-At the top of every script, after PARAM, include:
-CLEAN_SLATE = True
-if CLEAN_SLATE:
-    if MODEL_NAME in mdb.models:
-        del mdb.models[MODEL_NAME]
-    for j in list(mdb.jobs.keys()):
-        if j.startswith('JOB_'):
-            del mdb.jobs[j]
-
-═══ RIGID BODY GEOMETRY RULES ═══
-- For cylindrical indenters: use AnalyticRigidSurfRevolve (revolve a horizontal line at radius R)
-  Do NOT use BaseSolidExtrude for rigid surfaces — it creates a deformable solid, not a rigid surface.
-- For flat punch: use AnalyticRigidSurf2DPlanar or Shell Planar
-- For sphere: revolve an arc
-- Always create RP on rigid part BEFORE assembly
-
-═══ CONTACT SURFACE SELECTION (surgical precision) ═══
-- NEVER use instance.faces as a contact surface — too broad, causes instability
-- For indenter: select only the bottom face using bounding box at Z_min after placement
-- For target body: select only the top face using bounding box at Y_max or Z_max
-- Validate: REQUIRE(len(surf_faces) == expected_count, 'Contact surface has %d faces, expected %d')
-- If count > expected, disambiguate by face normal:
-  selected = [f for f in faces if abs(f.getNormal()[axis] - expected_normal) < 0.1]
-
-═══ STEP ENGAGEMENT STRATEGY (contact problems) ═══
-For contact analyses, use deterministic step sequencing:
-1. STEP_SEAT:   StaticStep, small displacement (e.g., -0.1mm) to establish contact
-2. STEP_LOAD:   StaticStep, full loading
-Optional: SmoothStepAmplitude to avoid initial contact shock:
-  myModel.SmoothStepAmplitude(name='AMP_RAMP', timeSpan=STEP, data=((0,0),(1,1)))
-  # Apply via amplitude='AMP_RAMP' in load/BC definition
-
-═══ MESHING STRATEGY (no partitioning) ═══
-Do NOT partition geometry for meshing. The mesh ladder handles geometry that
-cannot be swept/structured by falling back to FREE+TET(C3D10).
-For local refinement, use seedEdgeBySize on edges selected by bounding box:
-  refine_edges = p.edges.getByBoundingBox(xMin=..., yMax=...)
-  REQUIRE(len(refine_edges) > 0, 'No edges found for refinement seeding')
-  p.seedEdgeBySize(edges=refine_edges, size=PARAM['mesh_size']*0.5)
-This is simpler and more reliable than datum-plane partitioning.
-
-═══ DEEP QUALITY GATE (before job.submit — engineering-grade) ═══
-Beyond existence checks, verify CORRECTNESS:
-G1: Contact pair exists AND property assigned
-G2: Rigid body RP is constrained (rigid body constraint or coupling exists)
-G3: Section assignment covers ALL cells: REQUIRE(len(p.sectionAssignments) > 0 and
-     sum(len(sa.region) for sa in p.sectionAssignments) == len(p.cells))
-G4: Output requests exist for KPI channels (S, U minimum)
-G5: nlgeom=ON for contact/large-deformation models
-G6: Contact surfaces are non-empty and face count matches expectation
-G7: Step incrementation is reasonable (initialInc <= maxInc, timePeriod > 0)
-
-═══ RESILIENT SELECTION (across geometry changes) ═══
-When using getByBoundingBox, validate results:
-- Check expected face count; if count > expected, disambiguate:
-  faces = [f for f in bbox_faces if f.getNormal() == expected_direction]
-- Log selection: print('SELECTION: %s found %d faces (expected %d)' % (name, len(faces), expected))
-- If 0 faces found, try with wider tolerance (2x, then 5x) before failing
-
-═══ STRUCTURED LOG HEADER ═══
-Every script should start with a parameter summary:
-print('='*60)
-print('ABAQUS MODEL BUILD LOG')
-print('='*60)
-for k, v in sorted(PARAM.items()):
-    print('  %-20s = %s' % (k, v))
-print('='*60)
-
-═══ STRICT QUALITY GATE (self-check before returning) ═══
-Before returning JSON, internally verify: no undefined variables, no region misuse,
-all names from naming registry, all sets validated, mesh validated, job validated,
-RUN_JOB toggle present, output requests include S/E/U/RF,
-Run Readiness Report present, Script Manifest present,
-REG dictionary fully initialized, CLEAN_SLATE option present.
-If ANY fails, fix automatically before returning.
-
-═══ BEHAVIOURAL STANDARD ═══
-You are NOT a code generator. You are a simulation engineer.
-Think: Model stability → Region robustness → Step correctness → Mesh validity → Solver readiness.
-Only then return final script.
+═══ CRITICAL REMINDERS ═══
+- Rigid body: use AnalyticRigidSurfRevolve, NOT BaseSolidExtrude
+- Contact surfaces: select ONLY intended face via bounding box, NEVER all faces
+- Step engagement: STEP_SEAT before STEP_LOAD for contact
+- nlgeom=ON for contact/large deformation
+- elemLibrary=STANDARD for StaticStep workflows
+- try/except/finally order — NEVER try/finally/except
+- Always close ODB in finally: if odb is not None: odb.close()
 
 ═══ RESPONSE FORMAT ═══
 Respond with valid JSON only. No markdown. No code fences. Just a JSON object:
@@ -1712,7 +1491,7 @@ serve(async (req) => {
       console.log(`Attempt ${modelIdx + 1}/${MODEL_CHAIN.length}: model=${model}, prompt_len=${systemPrompt.length}`);
 
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 45000);
+      const timeout = setTimeout(() => controller.abort(), 55000);
       let aiResponse: Response;
       try {
         aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
