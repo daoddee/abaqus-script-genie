@@ -380,6 +380,13 @@ function checkRegionTypes(script: string): string[] {
     );
   }
 
+  // elemLibrary must be STANDARD for static/implicit workflows
+  if (/ElemType\s*\([^)]*elemLibrary\s*=\s*EXPLICIT/.test(script) && !/ExplicitDynamicsStep/.test(script)) {
+    issues.push(
+      `MESH: elemLibrary=EXPLICIT used but no ExplicitDynamicsStep found. Use elemLibrary=STANDARD for StaticStep workflows.`
+    );
+  }
+
   // ODB access without guards
   if (/openOdb\s*\(/.test(script)) {
     if (!/os\.path\.exists/.test(script)) {
@@ -448,7 +455,7 @@ function checkPreFlightValidation(script: string): string[] {
 
   if (/generateMesh/.test(script) && !/len\s*\(\s*\w+\.elements\s*\)/.test(script)) {
     issues.push(
-      "INFO: No mesh validation after generateMesh(). Consider adding: assert len(p.elements) > 0"
+      "INFO: No mesh validation after generateMesh(). Consider adding: REQUIRE(len(p.elements) > 0, ...)"
     );
   }
 
@@ -469,6 +476,13 @@ function checkPreFlightValidation(script: string): string[] {
   if (/generateMesh/.test(script) && !/except.*mesh|except.*Mesh|except\s+Exception.*mesh|MESH_LADDER|mesh_ladder/i.test(script)) {
     issues.push(
       "INFO: No mesh fallback (try/except with coarser seed or element change). Wrap generateMesh() in mesh ladder for resilience."
+    );
+  }
+
+  // ── try/finally/except detection (syntax error in Python) ──
+  if (/\btry\s*:[\s\S]*?\bfinally\s*:[\s\S]*?\bexcept\s/.test(script)) {
+    issues.push(
+      "SYNTAX: try/finally/except detected — Python requires try/except/finally. Move except BEFORE finally."
     );
   }
 
@@ -772,6 +786,7 @@ function lintScript(script: string): string[] {
   function classifySeverity(msg: string): string {
     if (/^BANNED:|^Blocked|^Missing required import/.test(msg)) return 'ERROR';
     if (/^Missing \w+ definition/.test(msg)) return 'ERROR';
+    if (/^SYNTAX:/.test(msg)) return 'ERROR';
     if (/^SELECTION:.*index-based|^REGION:|^CONTACT:.*NormalBehavior|^NLGEOM:|^STABILITY:|^STEP\/LOAD:.*Initial|^PYTHON3:|^UNIT:|^noGUI:|^JOB CONTROL:.*Missing RUN_JOB/.test(msg)) return 'ERROR';
     if (/^PRE-FLIGHT:|^SELECTION:|^OUTPUT:|^REG:|^CONTACT:|^SECTION:|^MESH:|^BUILD ORDER:|^RP HANDLING:|^JOB CONTROL:|^ODB:|^VERSION:/.test(msg)) return 'WARN';
     if (/^INFO:/.test(msg)) return 'INFO';
@@ -1037,18 +1052,19 @@ RULE 6 — FIXED BUILD ORDER (must not be violated):
   B) Materials (Elastic, Density, Plastic, etc.)
   C) Sections (HomogeneousSolidSection, etc.)
   D) Part geometry (sketch → extrude/revolve → features)
-  E) Partitioning (datum planes + PartitionCellByDatumPlane if needed)
-  F) Section assignment (regionToolset.Region(cells=p.cells[:]))
-  G) Assembly + instances + positioning (translate/rotate)
-  H) Sets + surfaces (prefer assembly-level, validate non-empty)
-  I) Steps (StaticStep, etc. — Initial is implicit)
-  J) BCs (EncastreBC, DisplacementBC in Initial for rigid body prevention)
-  K) Loads (Pressure, ConcentratedForce in non-Initial steps)
-  L) Interactions (contact/ties/couplings with surface sanity checks)
-  M) Mesh controls + element types + seeds + mesh generation (mesh ladder)
-  N) Pre-flight correctness gate (MUST pass before job submission)
-  O) Job creation + submit + waitForCompletion
-  P) ODB postprocessing (robust, Python 3 safe, no hardcoded keys)
+  E) Section assignment (regionToolset.Region(cells=p.cells[:]))
+  F) Assembly + instances + positioning (translate/rotate)
+  G) Sets + surfaces (prefer assembly-level, validate non-empty)
+  H) Steps (StaticStep, etc. — Initial is implicit)
+  I) BCs (EncastreBC, DisplacementBC in Initial for rigid body prevention)
+  J) Loads (Pressure, ConcentratedForce in non-Initial steps)
+  K) Interactions (contact/ties/couplings with surface sanity checks)
+  L) Mesh controls + element types + seeds + mesh generation (mesh ladder)
+  M) Pre-flight correctness gate (MUST pass before job submission)
+  N) Job creation + submit + waitForCompletion
+  O) ODB postprocessing (robust, Python 3 safe, no hardcoded keys)
+  NOTE: Do NOT add a partition step. Rely on the mesh ladder (TET fallback) for
+  complex geometry. Local seeding (seedEdgeBySize) handles refinement.
 
 RULE 7 — SELECTION POLICY:
   Priority order:
@@ -1062,11 +1078,14 @@ RULE 7 — SELECTION POLICY:
   For contact: NEVER use "all faces" as a contact surface. Select ONLY the intended face(s).
 
 RULE 8 — MESHING POLICY:
-  Attempt preferred mesh first (structured/sweep where geometry allows).
+  Do NOT partition geometry for meshing. Use the mesh ladder with TET fallback instead.
+  For local refinement, use seedEdgeBySize on specific edges (selected by bounding box).
   Include mesh ladder fallback:
     3D: SWEEP+HEX(C3D8R) → STRUCTURED+HEX(C3D8R) → FREE+TET(C3D10) → coarser seed
     2D: STRUCTURED+QUAD(CPS8R) → FREE+QUAD(CPS8R) → FREE+TRI(CPS6M) → coarser seed
   elemCode must be bare abaqusConstants symbol: C3D8R, C3D10, CPS8R — NOT strings.
+  elemLibrary MUST be STANDARD for StaticStep/ImplicitDynamic workflows.
+  elemLibrary=EXPLICIT only for ExplicitDynamicsStep.
   Validate: REQUIRE(len(p.elements) > 0, 'Mesh generated 0 elements')
 
 RULE 9 — SOLVER STABILITY:
@@ -1103,7 +1122,7 @@ Every script MUST include ALL of the following:
 4. RP_REGION() helper
 5. REG registry: {'sets':{}, 'surfaces':{}, 'rps':{}, 'steps':{}, 'bcs':{},
                    'loads':{}, 'jobs':{}, 'interactions':{}, 'materials':{}, 'sections':{}}
-6. Phase markers (Phase A/B/C/… with try/except per phase)
+6. Phase markers (Phase A/B/C/… with try/except/finally per phase — NEVER try/finally/except)
 7. Unit consistency check (density units match geometry units)
 8. Pre-flight gate (checks: steps, BCs, loads, materials, sections, mesh, contact, outputs)
 9. Job submission + completion check + ODB verification
@@ -1139,6 +1158,9 @@ Without normal preload, friction is ill-posed.
 - NEVER use session.viewports (noGUI only)
 - NEVER use string elemCode: 'C3D8R' — use bare constant C3D8R
 - NEVER use getattr(mesh, 'C3D8R') — use C3D8R directly from abaqusConstants
+- NEVER write try/finally/except — Python syntax is try/except/finally ONLY
+- NEVER use faces[0], edges[0], cells[0], vertices[0] — use getByBoundingBox + REQUIRE
+- NEVER use elemLibrary=EXPLICIT for StaticStep — use elemLibrary=STANDARD
 
 ═══ HELPER FUNCTIONS (include in every script after PARAM/REG) ═══
 
@@ -1191,6 +1213,8 @@ REQUIRE(mesh_success, 'All mesh strategies exhausted')
 \`\`\`
 
 ═══ PRE-FLIGHT GATE (mandatory — before job.submit) ═══
+Only check artifacts that YOUR script actually created. Do NOT check for loads if the
+script has no loads (e.g., modal/buckling). Do NOT check for contact if no contact defined.
 
 \`\`\`python
 model = mdb.models[MODEL_NAME]
@@ -1198,8 +1222,9 @@ a = model.rootAssembly
 non_initial_steps = [s for s in model.steps.keys() if s != 'Initial']
 REQUIRE(len(non_initial_steps) > 0, 'No non-Initial step defined')
 REQUIRE(len(model.boundaryConditions) > 0, 'No BCs — rigid body motion')
-if '${analysisType}' not in ('modal', 'buckling'):
-    REQUIRE(len(model.loads) > 0, 'No loads defined')
+# Only check loads if this script defines them (not modal/buckling):
+if len(model.loads) == 0 and any(hasattr(model.steps[s], 'timePeriod') for s in non_initial_steps):
+    print('PRE-FLIGHT WARN: No loads defined — verify this is intentional')
 for inst_name, inst in a.instances.items():
     if inst.type == DEFORMABLE_BODY:
         REQUIRE(len(inst.elements) > 0, 'Instance %s has no mesh' % inst_name)
@@ -1207,9 +1232,15 @@ REQUIRE(len(model.materials) > 0, 'No materials defined')
 for part_name, part_obj in model.parts.items():
     if part_obj.type == DEFORMABLE_BODY:
         REQUIRE(len(part_obj.sectionAssignments) > 0, 'Part %s has no section' % part_name)
+# Only check contact if interactions exist:
+if len(model.interactions) > 0:
+    for int_name, int_obj in model.interactions.items():
+        if hasattr(int_obj, 'master') and hasattr(int_obj, 'slave'):
+            print('PRE-FLIGHT: Contact %s verified' % int_name)
 \`\`\`
 
 ═══ ODB POSTPROCESSING (defensive, Python 3, noGUI) ═══
+CRITICAL: Always use try/except/finally — NEVER try/finally/except (syntax error).
 
 \`\`\`python
 import os
@@ -1222,32 +1253,47 @@ else:
     try:
         odb = odbAccess.openOdb(path=odb_path, readOnly=True)
         step_keys = list(odb.steps.keys())
-        if step_keys:
-            fo = odb.steps[step_keys[-1]].frames[-1].fieldOutputs
-            if 'S' in fo and len(fo['S'].values) > 0:
-                mises = fo['S'].getScalarField(invariant=MISES)
-                print('KPI: Max Mises = %.4f' % max(v.data for v in mises.values))
-            if 'U' in fo and len(fo['U'].values) > 0:
-                print('KPI: Max U mag = %.6f' % max(v.magnitude for v in fo['U'].values))
-            # History: search by SET_RP first (deterministic), then heuristic fallback
-            hr_keys = list(odb.steps[step_keys[-1]].historyRegions.keys())
-            target_hr = None
-            for hk in hr_keys:
-                if 'SET_RP' in hk.upper():
-                    target_hr = odb.steps[step_keys[-1]].historyRegions[hk]; break
-            if not target_hr:
+        if len(step_keys) == 0:
+            print('POST: No steps in ODB — skipping')
+        else:
+            last_step = odb.steps[step_keys[-1]]
+            if len(last_step.frames) == 0:
+                print('POST: No frames in last step — skipping')
+            else:
+                fo = last_step.frames[-1].fieldOutputs
+                if 'S' in fo and len(fo['S'].values) > 0:
+                    mises = fo['S'].getScalarField(invariant=MISES)
+                    print('KPI: Max Mises = %.4f' % max(v.data for v in mises.values))
+                else:
+                    print('POST: S field not found or empty')
+                if 'U' in fo and len(fo['U'].values) > 0:
+                    print('KPI: Max U mag = %.6f' % max(v.magnitude for v in fo['U'].values))
+                else:
+                    print('POST: U field not found or empty')
+                # History: search by SET_RP first (deterministic), then heuristic fallback
+                hr_keys = list(last_step.historyRegions.keys())
+                target_hr = None
                 for hk in hr_keys:
-                    if 'Node' in hk or 'RP' in hk.upper():
-                        target_hr = odb.steps[step_keys[-1]].historyRegions[hk]
-                        print('POST: Heuristic HR match: %s' % hk); break
-            if target_hr:
-                for v in ('RF1','RF2','RF3','U1','U2','U3'):
-                    if v in target_hr.historyOutputs and target_hr.historyOutputs[v].data:
-                        print('KPI: %s final = %.6f' % (v, target_hr.historyOutputs[v].data[-1][1]))
+                    if 'SET_RP' in hk.upper():
+                        target_hr = last_step.historyRegions[hk]
+                        break
+                if target_hr is None:
+                    for hk in hr_keys:
+                        if 'Node' in hk or 'RP' in hk.upper():
+                            target_hr = last_step.historyRegions[hk]
+                            print('POST: Heuristic HR match (fallback): %s' % hk)
+                            break
+                if target_hr is not None:
+                    for v in ('RF1','RF2','RF3','U1','U2','U3'):
+                        if v in target_hr.historyOutputs:
+                            ho_data = target_hr.historyOutputs[v].data
+                            if len(ho_data) > 0:
+                                print('KPI: %s final = %.6f' % (v, ho_data[-1][1]))
     except Exception as e_post:
         print('POST: Error — %s' % str(e_post))
     finally:
-        if odb: odb.close()
+        if odb is not None:
+            odb.close()
 \`\`\`
 
 ═══ SCRIPT MANIFEST (include as comments at end of script) ═══
@@ -1370,30 +1416,28 @@ if RUN_JOB:
     REQUIRE(str(mdb.jobs[JOB_NAME].status) == 'COMPLETED', 'Job did not complete')
 
 --- ODB Postprocessing (noGUI-safe, Python 3, defensive) ---
-# See full defensive template in "ODB POSTPROCESSING" section above.
-# Key rules:
-# 1. Guard: os.path.exists(odb_path) before opening
-# 2. Guard: len(odb.steps) > 0 before accessing steps
-# 3. Guard: 'S' in fo, 'U' in fo before accessing fields
-# 4. Primary KPIs from field outputs (reliable)
-# 5. History region is FALLBACK — search by SET_RP first, then heuristic
-# 6. Always close odb in finally block (check odb is not None)
+# CRITICAL: Always use try/except/finally — NEVER try/finally/except (syntax error).
 import os, odbAccess
 odb = None
-if os.path.exists(JOB_NAME + '.odb'):
-    odb = odbAccess.openOdb(path=JOB_NAME + '.odb', readOnly=True)
+odb_path = JOB_NAME + '.odb'
+if os.path.exists(odb_path):
     try:
+        odb = odbAccess.openOdb(path=odb_path, readOnly=True)
         step_keys = list(odb.steps.keys())
-        if step_keys:
-            fo = odb.steps[step_keys[-1]].frames[-1].fieldOutputs
-            if 'S' in fo:
+        if len(step_keys) > 0:
+            last_frame = odb.steps[step_keys[-1]].frames[-1]
+            fo = last_frame.fieldOutputs
+            if 'S' in fo and len(fo['S'].values) > 0:
                 max_mises = max(v.data for v in fo['S'].getScalarField(invariant=MISES).values)
                 print('KPI: Max Mises = %.4f' % max_mises)
-            if 'U' in fo:
+            if 'U' in fo and len(fo['U'].values) > 0:
                 max_u_mag = max(v.magnitude for v in fo['U'].values)
                 print('KPI: Max U mag = %.6f' % max_u_mag)
+    except Exception as e_odb:
+        print('POST: ODB error — %s' % str(e_odb))
     finally:
-        if odb: odb.close()
+        if odb is not None:
+            odb.close()
 
 ═══ MATERIAL DEFINITIONS REFERENCE ═══
 Common materials (mm/N/MPa/tonne system):
@@ -1478,13 +1522,14 @@ Optional: SmoothStepAmplitude to avoid initial contact shock:
   myModel.SmoothStepAmplitude(name='AMP_RAMP', timeSpan=STEP, data=((0,0),(1,1)))
   # Apply via amplitude='AMP_RAMP' in load/BC definition
 
-═══ PARTITIONING FOR MESH QUALITY ═══
-Before meshing, partition geometry to enable structured/sweep meshing:
-  # Partition by datum plane
-  dp = p.DatumPlaneByPrincipalPlane(principalPlane=XYPLANE, offset=W/2)
-  p.PartitionCellByDatumPlane(datumPlane=p.datums[dp.id], cells=p.cells[:])
-  # After partitioning, cells may be swept/structured instead of free-TET
-This is the #1 meshing quality improvement. Always partition along load paths.
+═══ MESHING STRATEGY (no partitioning) ═══
+Do NOT partition geometry for meshing. The mesh ladder handles geometry that
+cannot be swept/structured by falling back to FREE+TET(C3D10).
+For local refinement, use seedEdgeBySize on edges selected by bounding box:
+  refine_edges = p.edges.getByBoundingBox(xMin=..., yMax=...)
+  REQUIRE(len(refine_edges) > 0, 'No edges found for refinement seeding')
+  p.seedEdgeBySize(edges=refine_edges, size=PARAM['mesh_size']*0.5)
+This is simpler and more reliable than datum-plane partitioning.
 
 ═══ DEEP QUALITY GATE (before job.submit — engineering-grade) ═══
 Beyond existence checks, verify CORRECTNESS:
