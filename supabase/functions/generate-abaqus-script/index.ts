@@ -352,6 +352,55 @@ function checkRegionTypes(script: string): string[] {
     }
   }
 
+  // SectionAssignment region must be tuple-wrapped, not Region()
+  if (/SectionAssignment\s*\(/.test(script)) {
+    if (/SectionAssignment\s*\([^)]*region\s*=\s*regionToolset\.Region/.test(script)) {
+      issues.push(
+        `REGION: SectionAssignment region should be tuple-wrapped cells: region=(p.cells[:],). Do NOT use regionToolset.Region().`
+      );
+    }
+    if (/SectionAssignment\s*\([^)]*region\s*=\s*\w+\.cells\b(?!\s*\[\s*:\s*\])/.test(script)) {
+      issues.push(
+        `REGION: SectionAssignment region must slice cells: region=(p.cells[:],) — missing [:] slice.`
+      );
+    }
+  }
+
+  // elemCode must be a bare constant, not a string
+  if (/ElemType\s*\([^)]*elemCode\s*=\s*['"]/.test(script)) {
+    issues.push(
+      `MESH: elemCode must be a bare abaqusConstants symbol (e.g., C3D8R), NOT a string like 'C3D8R'.`
+    );
+  }
+  if (/ElemType\s*\([^)]*elemCode\s*=\s*getattr\s*\(/.test(script)) {
+    issues.push(
+      `MESH: elemCode should be a bare constant (C3D8R, C3D10), not getattr(mesh, ...). Import from abaqusConstants.`
+    );
+  }
+
+  // ODB access without guards
+  if (/openOdb\s*\(/.test(script)) {
+    if (!/os\.path\.exists/.test(script)) {
+      issues.push(
+        `ODB: openOdb() called without os.path.exists() guard. ODB file may not exist if job failed.`
+      );
+    }
+    if (/fieldOutputs\s*\[\s*['"]/.test(script) && !/if\s+['"]\w+['"]\s+in\s+f|if\s+['"]\w+['"]\s+in\s+fo|'S'\s+in\s+fo|'U'\s+in\s+fo/.test(script)) {
+      issues.push(
+        `ODB: Accessing fieldOutputs['S'] or ['U'] without checking if key exists. Guard with: if 'S' in fo:`
+      );
+    }
+  }
+
+  // History region accessed by heuristic without fallback note
+  if (/historyRegions\.keys\(\)/.test(script) && /if\s+['"]Node['"]\s+in\s+hr_key|'RP'\s+in/.test(script)) {
+    if (!/SET_RP/.test(script) && !/primary|fallback|heuristic/i.test(script)) {
+      issues.push(
+        `ODB: History region matched by heuristic string ('Node'/'RP'). Prefer matching by deterministic set name (SET_RP_*) first.`
+      );
+    }
+  }
+
   return issues;
 }
 
@@ -1031,28 +1080,44 @@ Jobs:        JOB_<MODEL>_<TEST>
 ALWAYS implement the mesh ladder in your script. This is NOT optional:
 
 \`\`\`python
-# ══ MESH LADDER ══
-MESH_LADDER = [
-    {'technique': SWEEP, 'elemShape': HEX, 'elemCode': 'C3D8R', 'label': 'HEX-sweep'},
-    {'technique': STRUCTURED, 'elemShape': HEX, 'elemCode': 'C3D8R', 'label': 'HEX-structured'},
-    {'technique': FREE, 'elemShape': TET, 'elemCode': 'C3D10', 'label': 'TET-free'},
+# ══ MESH LADDER (3D) ══
+# technique / elemShape / elemCode are all abaqusConstants — use bare constants, NOT strings
+MESH_LADDER_3D = [
+    {'technique': SWEEP,      'elemShape': HEX, 'elemCode': C3D8R,  'label': 'HEX-sweep'},
+    {'technique': STRUCTURED, 'elemShape': HEX, 'elemCode': C3D8R,  'label': 'HEX-structured'},
+    {'technique': FREE,       'elemShape': TET, 'elemCode': C3D10,  'label': 'TET-free'},
 ]
+
+# ══ MESH LADDER (2D Shell/Plane Stress) ══
+MESH_LADDER_2D = [
+    {'technique': STRUCTURED, 'elemShape': QUAD, 'elemCode': CPS8R,  'label': 'QUAD-structured'},
+    {'technique': FREE,       'elemShape': QUAD, 'elemCode': CPS8R,  'label': 'QUAD-free'},
+    {'technique': FREE,       'elemShape': TRI,  'elemCode': CPS6M,  'label': 'TRI-free'},
+]
+
+# Choose ladder based on dimensionality
+MESH_LADDER = MESH_LADDER_3D  # or MESH_LADDER_2D for 2D parts
 
 mesh_success = False
 for rung in MESH_LADDER:
     for seed_multiplier in [1.0, 1.5, 2.0]:
         try:
-            p.setMeshControls(regions=p.cells[:], technique=rung['technique'], elemShape=rung['elemShape'])
-            elem_type = mesh.ElemType(elemCode=getattr(mesh, rung['elemCode']), elemLibrary=STANDARD)
+            p.setMeshControls(regions=p.cells[:], technique=rung['technique'],
+                              elemShape=rung['elemShape'])
+            # elemCode is already an abaqusConstants symbol — pass directly
+            elem_type = mesh.ElemType(elemCode=rung['elemCode'], elemLibrary=STANDARD)
             p.setElementType(regions=(p.cells[:],), elemTypes=(elem_type,))
-            p.seedPart(size=PARAM['mesh_size'] * seed_multiplier, deviationFactor=0.1, minSizeFactor=0.1)
+            p.seedPart(size=PARAM['mesh_size'] * seed_multiplier,
+                       deviationFactor=0.1, minSizeFactor=0.1)
             p.generateMesh()
             REQUIRE(len(p.elements) > 0, 'Mesh generated 0 elements')
-            print('MESH OK: %s at seed=%.1f (%d elements)' % (rung['label'], PARAM['mesh_size'] * seed_multiplier, len(p.elements)))
+            print('MESH OK: %s at seed=%.1f (%d elements)' %
+                  (rung['label'], PARAM['mesh_size'] * seed_multiplier, len(p.elements)))
             mesh_success = True
             break
         except Exception as e_mesh:
-            print('MESH FAIL: %s at seed=%.1f — %s' % (rung['label'], PARAM['mesh_size'] * seed_multiplier, str(e_mesh)))
+            print('MESH FAIL: %s at seed=%.1f — %s' %
+                  (rung['label'], PARAM['mesh_size'] * seed_multiplier, str(e_mesh)))
             try:
                 p.deleteMesh()
             except:
@@ -1063,8 +1128,14 @@ for rung in MESH_LADDER:
 REQUIRE(mesh_success, 'All mesh strategies exhausted. Check geometry partitioning.')
 \`\`\`
 
-For 2D models, use the equivalent 2D ladder:
-  CPS8R (quad-structured) → CPS6M (tri-free) → coarser seed
+IMPORTANT MESH RULES:
+- technique must be: SWEEP, STRUCTURED, or FREE (abaqusConstants symbols)
+- elemShape must be: HEX, TET, QUAD, TRI, WEDGE (abaqusConstants symbols)
+- elemCode must be bare constant: C3D8R, C3D10, CPS8R, CPS6M — NOT strings like 'C3D8R'
+  ✅ mesh.ElemType(elemCode=C3D8R, elemLibrary=STANDARD)
+  ❌ mesh.ElemType(elemCode=getattr(mesh, 'C3D8R'), ...)  — fragile, unnecessary
+  ❌ mesh.ElemType(elemCode='C3D8R', ...)  — will fail, elemCode expects a constant
+- For 2D parts: use p.faces[:] instead of p.cells[:] in setMeshControls and setElementType
 
 ═══ COMMON PITFALLS TO AVOID ═══
 - NEVER use referencePoints.keys()[index] — ordering is unstable
@@ -1075,11 +1146,40 @@ For 2D models, use the equivalent 2D ladder:
 - NEVER use frictionCoefficient= in TangentialBehavior — use table=((mu,),) instead for cross-version compatibility
 - NEVER output more than ONE script per response — if you see a second 'from abaqus import *' mid-file, you are concatenating scripts
 - NEVER use session.viewports or any GUI-dependent calls — scripts must run noGUI
+- NEVER use string-based elemCode like 'C3D8R' or getattr(mesh, 'C3D8R') — use bare constants: C3D8R, C3D10
 - ALWAYS create sets/surfaces BEFORE referencing them in BCs/loads
 - ALWAYS validate mesh: REQUIRE(len(p.elements) > 0, ...) after generateMesh()
 - ALWAYS import mesh module if using mesh.ElemType: import mesh
 - ALWAYS use seedPart() for global mesh size; seedEdgeBySize() ONLY for local refinement zones
 - ALWAYS close ODB handles after postprocessing: odb.close()
+
+═══ REGION OBJECTS — WHERE ABAQUS REQUIRES THEM ═══
+Abaqus expects Region objects (or tuple-wrapped geometry) in specific contexts. Getting this wrong
+causes "invalid argument" errors. Follow these patterns EXACTLY:
+
+1. SectionAssignment — tuple-wrapped geometry sequence:
+   ✅ region = (p.cells[:],)           # 3D solid
+   ✅ region = (p.faces[:],)           # 2D shell
+   ❌ region = p.cells[:]              # missing tuple wrap
+   ❌ region = regionToolset.Region(cells=p.cells[:])  # unnecessary Region object
+
+2. setElementType — tuple-wrapped geometry sequence (NOT Region):
+   ✅ p.setElementType(regions=(p.cells[:],), elemTypes=(elem_type,))
+   ❌ p.setElementType(regions=regionToolset.Region(cells=...), ...)
+
+3. Coupling controlPoint — regionToolset.Region:
+   ✅ regionToolset.Region(referencePoints=(rp_obj,))
+   ❌ rp_obj  (raw object)
+
+4. Loads (Pressure, ConcentratedForce) — use assembly surfaces/sets:
+   ✅ region=a.surfaces['SURF_TOP']         # surface reference from assembly
+   ✅ region=a.sets['SET_LOAD_POINT']       # set reference from assembly
+
+5. BCs (EncastreBC, DisplacementBC) — use assembly sets:
+   ✅ region=a.sets['SET_FIXED_END']
+
+6. RigidBody — refPointRegion must be Region:
+   ✅ refPointRegion=regionToolset.Region(referencePoints=(rp_obj,))
 
 ═══ CONTACT ENGAGEMENT RULE ═══
 If the model has friction contact + shear load, ALWAYS add a pre-engagement step:
@@ -1168,65 +1268,125 @@ print('PRE-FLIGHT: All gates passed (%d steps, %d BCs, %d loads)' % (
     len(non_initial_steps), len(model.boundaryConditions), len(model.loads)))
 \`\`\`
 
-═══ ODB POSTPROCESSING (noGUI-safe, Python 3 compatible) ═══
-When the user requests results extraction or KPIs, include this pattern:
+═══ ODB POSTPROCESSING (noGUI-safe, Python 3 compatible, defensive) ═══
+When the user requests results extraction or KPIs, include this pattern.
+EVERY access must be guarded — odb may be None, fields may not exist, history regions may be empty.
 
 \`\`\`python
-# ══ POSTPROCESSING (noGUI-safe) ══
-import odbAccess
-import csv
+# ══ POSTPROCESSING (noGUI-safe, defensive) ══
+import os
 
 odb_path = JOB_NAME + '.odb'
-odb = odbAccess.openOdb(path=odb_path, readOnly=True)
+odb = None
 
-try:
-    # Get last frame of last step — Python 3 safe
-    step_name = list(odb.steps.keys())[-1]
-    last_frame = odb.steps[step_name].frames[-1]
+# Guard 1: ODB file must exist
+if not os.path.exists(odb_path):
+    print('POST: ODB file %s not found — skipping postprocessing' % odb_path)
+else:
+    import odbAccess
+    import csv
 
-    # Extract stress (Mises) — element-based invariant
-    stress_field = last_frame.fieldOutputs['S']
-    mises_values = stress_field.getScalarField(invariant=MISES)
-    max_mises = max(v.data for v in mises_values.values)
-    print('KPI: Max von Mises stress = %.4f' % max_mises)
+    try:
+        odb = odbAccess.openOdb(path=odb_path, readOnly=True)
 
-    # Extract displacement — nodal-based
-    disp_field = last_frame.fieldOutputs['U']
-    max_u_mag = max(v.magnitude for v in disp_field.values)
-    min_u2 = min(v.data[1] for v in disp_field.values)  # max downward
-    print('KPI: Max displacement magnitude = %.6f' % max_u_mag)
-    print('KPI: Max downward deflection (U2) = %.6f' % min_u2)
+        # Guard 2: Steps must exist
+        step_keys = list(odb.steps.keys())
+        if len(step_keys) == 0:
+            print('POST: No steps found in ODB — skipping')
+        else:
+            step_name = step_keys[-1]           # Python 3 safe — list() first
+            step_obj = odb.steps[step_name]
 
-    # Sanity check: warn if displacement > 10% of characteristic length
-    if max_u_mag > 0.1 * PARAM.get('L', 100.0):
-        print('WARNING: Displacement (%.4f) > 10%% of model length (%.1f). Check units/loads.' % (max_u_mag, PARAM.get('L', 100.0)))
+            # Guard 3: Frames must exist
+            if len(step_obj.frames) == 0:
+                print('POST: No frames in step %s — skipping' % step_name)
+            else:
+                last_frame = step_obj.frames[-1]
+                fo = last_frame.fieldOutputs     # shorthand
 
-    # History region — search by key, don't hardcode
-    for hr_key in list(odb.steps[step_name].historyRegions.keys()):
-        if 'Node' in hr_key or 'RP' in hr_key.upper():
-            hr = odb.steps[step_name].historyRegions[hr_key]
-            for var_name in ('RF2', 'RF1', 'RF3'):
-                if var_name in hr.historyOutputs:
-                    rf_data = hr.historyOutputs[var_name].data
-                    print('KPI: %s final = %.4f' % (var_name, rf_data[-1][1]))
-            for var_name in ('U2', 'U1', 'U3'):
-                if var_name in hr.historyOutputs:
-                    u_data = hr.historyOutputs[var_name].data
-                    print('KPI: %s final = %.6f' % (var_name, u_data[-1][1]))
-            break
+                # ── Primary KPIs (field output based — reliable) ──
 
-    # Export nodal displacement to CSV (nodal data only — do NOT mix with element stress)
-    csv_path = JOB_NAME + '_results.csv'
-    with open(csv_path, 'w') as f:
-        writer = csv.writer(f)
-        writer.writerow(['NodeLabel', 'U1', 'U2', 'U3', 'U_Mag'])
-        for u_val in disp_field.values:
-            writer.writerow([u_val.nodeLabel, u_val.data[0], u_val.data[1], u_val.data[2], u_val.magnitude])
-    print('EXPORT: Results written to %s' % csv_path)
+                # Mises stress (element-based)
+                if 'S' in fo:
+                    stress_field = fo['S']
+                    mises = stress_field.getScalarField(invariant=MISES)
+                    if len(mises.values) > 0:
+                        max_mises = max(v.data for v in mises.values)
+                        print('KPI: Max von Mises stress = %.4f' % max_mises)
+                    else:
+                        print('POST: S field has no values')
+                else:
+                    print('POST: S (stress) not in field outputs — was it requested?')
 
-finally:
-    odb.close()
-    print('ODB: Handle closed')
+                # Displacement (nodal-based)
+                if 'U' in fo:
+                    disp_field = fo['U']
+                    if len(disp_field.values) > 0:
+                        max_u_mag = max(v.magnitude for v in disp_field.values)
+                        min_u2 = min(v.data[1] for v in disp_field.values)
+                        print('KPI: Max displacement magnitude = %.6f' % max_u_mag)
+                        print('KPI: Max downward deflection (U2) = %.6f' % min_u2)
+
+                        # Sanity check
+                        char_length = PARAM.get('L', PARAM.get('length', 100.0))
+                        if max_u_mag > 0.1 * char_length:
+                            print('WARNING: Displacement (%.4f) > 10%% of model length (%.1f). '
+                                  'Check units/loads.' % (max_u_mag, char_length))
+                    else:
+                        print('POST: U field has no values')
+                else:
+                    print('POST: U (displacement) not in field outputs — was it requested?')
+
+                # ── Secondary KPIs (history output — FALLBACK, not primary) ──
+                # History regions depend on output request configuration and RP naming.
+                # Use field outputs above as primary data source. History is supplementary.
+                hr_keys = list(step_obj.historyRegions.keys())
+                rp_hr_found = False
+                if len(hr_keys) > 0:
+                    # Strategy: first try the RP set name we created (deterministic)
+                    target_hr = None
+                    for hr_key in hr_keys:
+                        # Primary: match our deterministic set name
+                        if 'SET_RP' in hr_key.upper():
+                            target_hr = step_obj.historyRegions[hr_key]
+                            rp_hr_found = True
+                            break
+                    # Fallback: search for any Node/RP reference (heuristic)
+                    if target_hr is None:
+                        for hr_key in hr_keys:
+                            if 'Node' in hr_key or 'RP' in hr_key.upper():
+                                target_hr = step_obj.historyRegions[hr_key]
+                                rp_hr_found = True
+                                print('POST: Using heuristic history region match: %s' % hr_key)
+                                break
+
+                    if target_hr is not None:
+                        ho = target_hr.historyOutputs
+                        for var_name in ('RF1', 'RF2', 'RF3', 'U1', 'U2', 'U3'):
+                            if var_name in ho and len(ho[var_name].data) > 0:
+                                print('KPI: %s final = %.6f' % (var_name, ho[var_name].data[-1][1]))
+
+                if not rp_hr_found:
+                    print('POST: No RP history region found — history KPIs skipped (field KPIs above are primary)')
+
+                # ── CSV Export (nodal displacement only — never mix with element stress) ──
+                if 'U' in fo and len(fo['U'].values) > 0:
+                    csv_path = PARAM.get('output_dir', './') + JOB_NAME + '_results.csv'
+                    with open(csv_path, 'w') as f:
+                        writer = csv.writer(f)
+                        writer.writerow(['NodeLabel', 'U1', 'U2', 'U3', 'U_Mag'])
+                        for u_val in fo['U'].values:
+                            writer.writerow([u_val.nodeLabel, u_val.data[0], u_val.data[1],
+                                             u_val.data[2], u_val.magnitude])
+                    print('EXPORT: Results written to %s' % csv_path)
+
+    except Exception as e_post:
+        print('POST: Postprocessing error — %s' % str(e_post))
+
+    finally:
+        if odb is not None:
+            odb.close()
+            print('ODB: Handle closed')
 \`\`\`
 
 ═══ ABAQUS VERSION COMPATIBILITY MAP ═══
@@ -1405,27 +1565,31 @@ if RUN_JOB:
     mdb.jobs[JOB_NAME].waitForCompletion()
     REQUIRE(str(mdb.jobs[JOB_NAME].status) == 'COMPLETED', 'Job did not complete')
 
---- ODB Postprocessing (noGUI-safe, Python 3) ---
-import odbAccess
-odb = odbAccess.openOdb(path=JOB_NAME + '.odb', readOnly=True)
-try:
-    step_name = list(odb.steps.keys())[-1]     # Python 3 safe
-    last_frame = odb.steps[step_name].frames[-1]
-    stress_field = last_frame.fieldOutputs['S']
-    mises = stress_field.getScalarField(invariant=MISES)
-    max_mises = max(v.data for v in mises.values)
-    disp_field = last_frame.fieldOutputs['U']
-    max_u_mag = max(v.magnitude for v in disp_field.values)
-    # History region for RP:
-    for hr_key in odb.steps[step_name].historyRegions.keys():
-        if 'Node' in hr_key or 'RP' in hr_key.upper():
-            hr = odb.steps[step_name].historyRegions[hr_key]
-            if 'RF2' in hr.historyOutputs:
-                rf2_data = hr.historyOutputs['RF2'].data
-                print('RP RF2 final = %.4f' % rf2_data[-1][1])
-            break
-finally:
-    odb.close()
+--- ODB Postprocessing (noGUI-safe, Python 3, defensive) ---
+# See full defensive template in "ODB POSTPROCESSING" section above.
+# Key rules:
+# 1. Guard: os.path.exists(odb_path) before opening
+# 2. Guard: len(odb.steps) > 0 before accessing steps
+# 3. Guard: 'S' in fo, 'U' in fo before accessing fields
+# 4. Primary KPIs from field outputs (reliable)
+# 5. History region is FALLBACK — search by SET_RP first, then heuristic
+# 6. Always close odb in finally block (check odb is not None)
+import os, odbAccess
+odb = None
+if os.path.exists(JOB_NAME + '.odb'):
+    odb = odbAccess.openOdb(path=JOB_NAME + '.odb', readOnly=True)
+    try:
+        step_keys = list(odb.steps.keys())
+        if step_keys:
+            fo = odb.steps[step_keys[-1]].frames[-1].fieldOutputs
+            if 'S' in fo:
+                max_mises = max(v.data for v in fo['S'].getScalarField(invariant=MISES).values)
+                print('KPI: Max Mises = %.4f' % max_mises)
+            if 'U' in fo:
+                max_u_mag = max(v.magnitude for v in fo['U'].values)
+                print('KPI: Max U mag = %.6f' % max_u_mag)
+    finally:
+        if odb: odb.close()
 
 ═══ MATERIAL DEFINITIONS REFERENCE ═══
 Common materials (mm/N/MPa/tonne system):
