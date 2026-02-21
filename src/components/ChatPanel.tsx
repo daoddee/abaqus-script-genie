@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Send, Loader2, AlertTriangle, Info, Lock } from "lucide-react";
+import { Send, Loader2, AlertTriangle, Info } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
@@ -57,7 +57,7 @@ const ChatPanel = ({ onScriptGenerated, runtimeMode = "py3" }: ChatPanelProps) =
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
-  const [showPaywall, setShowPaywall] = useState(false);
+  
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -71,7 +71,8 @@ const ChatPanel = ({ onScriptGenerated, runtimeMode = "py3" }: ChatPanelProps) =
 
     // Check usage limit (subscribed users bypass)
     if (!subscribed && !canGenerate) {
-      setShowPaywall(true);
+      navigate("/plans");
+      toast.info("You've used all your free credits. Choose a plan to continue.");
       return;
     }
 
@@ -166,57 +167,6 @@ const ChatPanel = ({ onScriptGenerated, runtimeMode = "py3" }: ChatPanelProps) =
 
   return (
     <div className="flex flex-col h-full relative">
-      {/* Paywall overlay */}
-      {showPaywall && (
-        <div className="absolute inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-card border border-border rounded-xl p-6 max-w-sm w-full space-y-4 shadow-lg">
-            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-primary/10 border border-primary/20 mx-auto">
-              <Lock className="w-5 h-5 text-primary" />
-            </div>
-            <div className="text-center space-y-1">
-              <h3 className="text-lg font-semibold text-foreground">Free limit reached</h3>
-              <p className="text-sm text-muted-foreground">
-                You've used all {freeLimit} free script generations.
-                {!user
-                  ? " Sign up to continue or choose a plan for unlimited access."
-                  : " Choose a plan to continue generating scripts."}
-              </p>
-            </div>
-            <div className="space-y-2">
-              {!user ? (
-                <>
-                  <button
-                    onClick={() => navigate("/auth")}
-                    className="w-full bg-primary text-primary-foreground rounded-lg px-4 py-2.5 text-sm font-medium hover:opacity-90 transition-opacity"
-                  >
-                    Sign up / Log in
-                  </button>
-                  <button
-                    onClick={() => navigate("/plans")}
-                    className="w-full bg-secondary text-secondary-foreground rounded-lg px-4 py-2.5 text-sm font-medium hover:bg-secondary/80 transition-colors"
-                  >
-                    View Plans
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => navigate("/plans")}
-                  className="w-full bg-primary text-primary-foreground rounded-lg px-4 py-2.5 text-sm font-medium hover:opacity-90 transition-opacity"
-                >
-                  Choose a Plan
-                </button>
-              )}
-              <button
-                onClick={() => setShowPaywall(false)}
-                className="w-full text-xs text-muted-foreground hover:text-foreground transition-colors py-1"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
         {messages.length === 0 && (
