@@ -1076,8 +1076,8 @@ serve(async (req) => {
       );
     }
 
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
+    const OPENAI_API_KEY = Deno.env.get("apikey");
+    if (!OPENAI_API_KEY) throw new Error("OpenAI API key (apikey) is not configured");
 
     const analysisType = detectAnalysisType(prompt);
     const missingReqWarnings = detectMissingRequirements(prompt, analysisType);
@@ -1085,8 +1085,8 @@ serve(async (req) => {
     const template = template_id && TEMPLATES[template_id] ? TEMPLATES[template_id] : null;
     const autoTemplate = !template && TEMPLATES[analysisType] ? TEMPLATES[analysisType] : template;
 
-    // Two-tier model chain: primary (strong reasoning) → fallback (fast)
-    const MODEL_CHAIN = ["google/gemini-2.5-flash", "openai/gpt-5-mini", "google/gemini-2.5-flash-lite"];
+    // Model chain using OpenAI directly
+    const MODEL_CHAIN = ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"];
     let lastRawResponse = "";
     let allIssues: string[] = [...missingReqWarnings];
     let finalData: ScriptSchema | null = null;
@@ -1115,7 +1115,7 @@ serve(async (req) => {
 
       const requestBody = {
         model,
-        max_tokens: 16000,
+        max_completion_tokens: 16000,
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: prompt },
@@ -1128,10 +1128,10 @@ serve(async (req) => {
       const timeout = setTimeout(() => controller.abort(), 55000);
       let aiResponse: Response;
       try {
-        aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${LOVABLE_API_KEY}`,
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify(requestBody),
