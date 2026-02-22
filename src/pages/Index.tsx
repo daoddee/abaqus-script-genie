@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 import logo from "@/assets/logo.png";
-import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal, Send, Bug, CreditCard, Code, MessageSquare, LogOut, User } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, BookOpen, History, Terminal, Send, Bug, CreditCard, Code, MessageSquare, LogOut, User, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useAuth } from "@/hooks/useAuth";
@@ -11,11 +11,12 @@ import type { ArchivedScript } from "../components/ScriptPreview";
 import TemplatePanel from "../components/TemplatePanel";
 import HistorySidebar from "../components/HistorySidebar";
 import DebugPanel from "../components/DebugPanel";
+import PromptBuilder from "../components/PromptBuilder";
 
 type SidebarTab = "templates" | "history";
-type MiddleTab = "prompt" | "debug";
+type MiddleTab = "builder" | "prompt" | "debug";
 type RuntimeMode = "py3" | "py27";
-type MobileView = "chat" | "script";
+type MobileView = "builder" | "chat" | "script";
 
 const Index = () => {
   const { user, signOut } = useAuth();
@@ -25,12 +26,33 @@ const Index = () => {
   const [archivedScripts, setArchivedScripts] = useState<ArchivedScript[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(!isMobile);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("templates");
-  const [middleTab, setMiddleTab] = useState<MiddleTab>("prompt");
+  const [middleTab, setMiddleTab] = useState<MiddleTab>("builder");
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("py3");
-  const [mobileView, setMobileView] = useState<MobileView>("chat");
+  const [mobileView, setMobileView] = useState<MobileView>("builder");
   const scriptNameRef = useRef("abaqus_script.py");
   const activePromptRef = useRef<string | null>(null);
   const chatRef = useRef<{ setInput: (val: string) => void } | null>(null);
+  const chatInputRef = useRef<string | null>(null);
+
+  const handlePromptReady = (prompt: string) => {
+    chatInputRef.current = prompt;
+    setMiddleTab("prompt");
+    // Set the chat input after switching tabs
+    setTimeout(() => {
+      const inputEl = document.querySelector<HTMLInputElement>(
+        'input[placeholder="Describe your model..."]'
+      );
+      if (inputEl) {
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype,
+          "value"
+        )?.set;
+        nativeInputValueSetter?.call(inputEl, prompt);
+        inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+        inputEl.focus();
+      }
+    }, 100);
+  };
 
   // ... keep existing code (generateScriptName, handleScriptGenerated, handleTemplateSelect)
   const generateScriptName = (prompt: string): string => {
@@ -183,7 +205,12 @@ const Index = () => {
 
         {/* Mobile content area */}
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-          {mobileView === "chat" ? (
+          {mobileView === "builder" ? (
+            <PromptBuilder onPromptReady={(prompt) => {
+              handlePromptReady(prompt);
+              setMobileView("chat");
+            }} />
+          ) : mobileView === "chat" ? (
             <ChatPanel onScriptGenerated={handleScriptGenerated} runtimeMode={runtimeMode} />
           ) : (
             <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -205,13 +232,22 @@ const Index = () => {
         {/* Mobile bottom tab bar */}
         <div className="flex border-t border-border bg-card shrink-0">
           <button
+            onClick={() => setMobileView("builder")}
+            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors ${
+              mobileView === "builder" ? "text-primary" : "text-muted-foreground"
+            }`}
+          >
+            <Sparkles className="w-5 h-5" />
+            Builder
+          </button>
+          <button
             onClick={() => setMobileView("chat")}
             className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors ${
               mobileView === "chat" ? "text-primary" : "text-muted-foreground"
             }`}
           >
-            <MessageSquare className="w-5 h-5" />
-            Chat
+            <Send className="w-5 h-5" />
+            Generate
           </button>
           <button
             onClick={() => setMobileView("script")}
@@ -349,31 +385,44 @@ const Index = () => {
             )}
             <div className="flex items-center gap-0.5 bg-muted rounded-md p-0.5">
               <button
+                onClick={() => setMiddleTab("builder")}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                  middleTab === "builder"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Sparkles className="w-3 h-3" />
+                <span className="hidden lg:inline">1.</span> Builder
+              </button>
+              <button
                 onClick={() => setMiddleTab("prompt")}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-colors ${
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
                   middleTab === "prompt"
                     ? "bg-background text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
                 <Send className="w-3 h-3" />
-                Prompt
+                <span className="hidden lg:inline">2.</span> Generate
               </button>
               <button
                 onClick={() => setMiddleTab("debug")}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-colors ${
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
                   middleTab === "debug"
                     ? "bg-background text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
                 <Bug className="w-3 h-3" />
-                Debug
+                <span className="hidden lg:inline">3.</span> Debug
               </button>
             </div>
-            <span className="text-xs text-muted-foreground ml-auto font-mono">v0.1</span>
+            <span className="text-xs text-muted-foreground ml-auto font-mono">v0.2</span>
           </div>
-          {middleTab === "prompt" ? (
+          {middleTab === "builder" ? (
+            <PromptBuilder onPromptReady={handlePromptReady} />
+          ) : middleTab === "prompt" ? (
             <ChatPanel onScriptGenerated={handleScriptGenerated} runtimeMode={runtimeMode} />
           ) : (
             <DebugPanel script={script} onApplyFix={setScript} />
