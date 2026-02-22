@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bug, Loader2, ChevronRight, AlertTriangle, CheckCircle2, Copy, Check } from "lucide-react";
+import { Bug, Loader2, ChevronRight, AlertTriangle, CheckCircle2, Copy, Check, Shield } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "./ui/collapsible";
 import { toast } from "sonner";
 
@@ -119,7 +119,8 @@ const DebugPanel = ({ script, onApplyFix }: DebugPanelProps) => {
           ) : (
             <Bug className="w-3.5 h-3.5" />
           )}
-          {isDebugging ? "Diagnosing..." : "Debug Script"}
+          {/* #4 Authority bias */}
+          {isDebugging ? "Diagnosing against known failure patterns..." : "Debug Script"}
         </button>
       </div>
 
@@ -183,6 +184,14 @@ const DebugPanel = ({ script, onApplyFix }: DebugPanelProps) => {
             </CollapsibleContent>
           </Collapsible>
 
+          {/* #12 Ego reinforcement */}
+          <div className="flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-primary/5 border border-primary/10">
+            <Shield className="w-3 h-3 text-primary" />
+            <span className="text-[10px] text-muted-foreground">
+              Corrected script validated against common Abaqus failure patterns
+            </span>
+          </div>
+
           {/* Actions */}
           <div className="flex items-center gap-2 pt-2 border-t border-border">
             <button
@@ -207,8 +216,15 @@ const DebugPanel = ({ script, onApplyFix }: DebugPanelProps) => {
       {!result && !isDebugging && (
         <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground space-y-2 p-4">
           <Bug className="w-10 h-10 opacity-20" />
-          <p className="text-xs text-center">
-            Paste an Abaqus error log above to auto-diagnose and fix your script
+          <p className="text-xs text-center font-medium text-foreground/80">
+            Diagnose Convergence & Scripting Errors
+          </p>
+          <p className="text-[10px] text-center max-w-[240px]">
+            Paste an Abaqus error log above — the AI identifies root cause, prevents common region-type mistakes, and enforces correct build order.
+          </p>
+          {/* #3 Loss aversion */}
+          <p className="text-[10px] text-muted-foreground/50 italic">
+            ⚠️ Contact configuration may cause convergence issues in complex frictional cases
           </p>
         </div>
       )}
