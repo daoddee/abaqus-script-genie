@@ -472,7 +472,7 @@ const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
       )}
 
       {/* Input */}
-      <div className="p-3 border-t border-border">
+      <div className="p-3 border-t border-border shrink-0">
         <div className="flex gap-2">
           <input
             value={input}
