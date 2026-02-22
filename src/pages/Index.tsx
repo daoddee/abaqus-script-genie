@@ -218,7 +218,7 @@ const Index = () => {
                 <h2 className="text-sm font-semibold text-foreground">Script Preview</h2>
                 {script && (
                   <span className="ml-2 px-1.5 py-0.5 text-[10px] font-mono rounded bg-success/15 text-success border border-success/20">
-                    READY
+                    VALIDATED
                   </span>
                 )}
               </div>
@@ -418,7 +418,7 @@ const Index = () => {
                 <span className="hidden lg:inline">3.</span> Debug
               </button>
             </div>
-            <span className="text-xs text-muted-foreground ml-auto font-mono">v0.2</span>
+            <span className="text-xs text-muted-foreground ml-auto font-mono">v0.3</span>
           </div>
           {middleTab === "builder" ? (
             <PromptBuilder onPromptReady={handlePromptReady} />
@@ -435,7 +435,7 @@ const Index = () => {
             <h2 className="text-sm font-semibold text-foreground">Script Preview</h2>
             {script && (
               <span className="ml-2 px-1.5 py-0.5 text-[10px] font-mono rounded bg-success/15 text-success border border-success/20">
-                READY
+                VALIDATED
               </span>
             )}
           </div>

@@ -86,12 +86,10 @@ const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
     loadConversations();
   }, [loadConversations]);
 
-  // Auto-save conversation (debounced)
   const saveConversation = useCallback(
     async (msgs: Message[], prompt: string | null, convoId: string | null) => {
       if (!user || msgs.length === 0) return;
 
-      // Generate title from first user message
       const firstUserMsg = msgs.find((m) => m.role === "user");
       const title = firstUserMsg
         ? firstUserMsg.content.slice(0, 60) + (firstUserMsg.content.length > 60 ? "…" : "")
@@ -193,7 +191,6 @@ const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
         setFinalPrompt(extracted);
       }
 
-      // Auto-save
       debouncedSave(updatedMessages, extracted || finalPrompt, activeConversationId);
     } catch (e) {
       console.error("Prompt builder error:", e);
@@ -389,9 +386,14 @@ const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
             <div className="w-12 h-12 rounded-lg border border-primary/30 flex items-center justify-center glow-primary-sm">
               <Sparkles className="w-6 h-6 text-primary" />
             </div>
-            <p className="text-sm font-medium text-foreground">Prompt Builder</p>
+            {/* #1 Identity Framing */}
+            <p className="text-sm font-medium text-foreground">Operate Like a Senior Abaqus Engineer — From Day One</p>
             <p className="text-xs max-w-[280px] text-center">
-              Tell me what you want to simulate and I'll help you build a detailed, complete prompt for the script generator.
+              Describe your simulation intent. The AI will systematically define every parameter — geometry, materials, BCs, loads, mesh, and output — so nothing is left ambiguous.
+            </p>
+            {/* #11 Social proof */}
+            <p className="text-[10px] text-muted-foreground/50 italic">
+              Used in academic and consultancy workflows
             </p>
 
             {/* Quick start templates inline */}
@@ -436,7 +438,8 @@ const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
         {isLoading && (
           <div className="flex items-center gap-2 text-primary text-sm animate-slide-up">
             <Loader2 className="w-4 h-4 animate-spin" />
-            <span>Thinking...</span>
+            {/* #4 Authority bias */}
+            <span>Analyzing simulation requirements...</span>
           </div>
         )}
       </div>
@@ -475,7 +478,7 @@ const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-            placeholder="Describe what you want to simulate..."
+            placeholder="Describe your simulation intent..."
             className="flex-1 bg-muted border border-border rounded-md px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 font-sans"
           />
           <button
