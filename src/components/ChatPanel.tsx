@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Send, Loader2, AlertTriangle, Info, Shield, TrendingUp, ArrowRight, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useUsageLimit } from "@/hooks/useUsageLimit";
 import { useSubscription } from "@/hooks/useSubscription";
@@ -129,11 +130,18 @@ const ChatPanel = ({ onScriptGenerated, runtimeMode = "py3" }: ChatPanelProps) =
     setIsGenerating(true);
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast.error("Please sign in to generate scripts.");
+        setIsGenerating(false);
+        return;
+      }
+
       const resp = await fetch(API_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({ prompt: userPrompt, runtime_mode: runtimeMode }),
       });

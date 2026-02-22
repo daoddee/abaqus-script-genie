@@ -156,6 +156,27 @@ serve(async (req) => {
   const startTime = Date.now();
 
   try {
+    // ── Authentication check ──
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ ok: false, issues: ["Authentication required."], trace_id: traceId }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2.49.1");
+    const authClient = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!
+    );
+    const { data: { user: authUser }, error: authError } = await authClient.auth.getUser(authHeader.replace("Bearer ", ""));
+    if (authError || !authUser) {
+      return new Response(
+        JSON.stringify({ ok: false, issues: ["Invalid or expired session."], trace_id: traceId }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const { script, error_log, intent, abaqus_version } = await req.json();
 
     if (!script || typeof script !== "string" || script.length < 20) {

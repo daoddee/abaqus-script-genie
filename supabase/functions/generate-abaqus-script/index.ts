@@ -1061,6 +1061,25 @@ serve(async (req) => {
   const startTime = Date.now();
 
   try {
+    // ── Authentication check ──
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ ok: false, issues: ["Authentication required."], trace_id: traceId }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!;
+    const authClient = createClient(supabaseUrl, supabaseAnonKey);
+    const { data: { user: authUser }, error: authError } = await authClient.auth.getUser(authHeader.replace("Bearer ", ""));
+    if (authError || !authUser) {
+      return new Response(
+        JSON.stringify({ ok: false, issues: ["Invalid or expired session."], trace_id: traceId }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const { prompt, template_id, options = {}, runtime_mode = "py3" } = await req.json();
     if (!prompt || typeof prompt !== "string" || prompt.trim().length < 5) {
       return new Response(
