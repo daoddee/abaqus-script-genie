@@ -1,7 +1,9 @@
-import { useState, useRef, useEffect } from "react";
-import { Send, Loader2, Sparkles, ArrowRight, Copy, Check } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { Send, Loader2, Sparkles, ArrowRight, Copy, Check, Plus, MessageSquare, Trash2, Clock } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/useAuth";
 
 interface Message {
   id: string;
@@ -9,19 +11,43 @@ interface Message {
   content: string;
 }
 
+interface Conversation {
+  id: string;
+  title: string;
+  messages: Message[];
+  final_prompt: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 interface PromptBuilderProps {
   onPromptReady: (prompt: string) => void;
 }
 
+const STARTER_TEMPLATES = [
+  { label: "Beam under load", prompt: "I want to simulate a beam under load" },
+  { label: "Contact between plates", prompt: "I need a contact analysis between two plates" },
+  { label: "Pressure vessel", prompt: "I want to analyze a pressure vessel with internal pressure" },
+  { label: "Plate with hole", prompt: "I want to model a plate with a central hole under tension" },
+  { label: "Dynamic impact", prompt: "I need a dynamic impact simulation" },
+  { label: "Bolted connection", prompt: "I want to simulate a bolted plate connection with friction" },
+];
+
 const API_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/prompt-builder`;
 
 const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
+  const { user } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [finalPrompt, setFinalPrompt] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -29,18 +55,104 @@ const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
     }
   }, [messages, isLoading]);
 
+  // Load conversations list
+  const loadConversations = useCallback(async () => {
+    if (!user) return;
+    setLoadingHistory(true);
+    try {
+      const { data, error } = await supabase
+        .from("prompt_conversations")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false })
+        .limit(20);
+
+      if (error) throw error;
+
+      setConversations(
+        (data || []).map((d) => ({
+          ...d,
+          messages: (d.messages as unknown as Message[]) || [],
+        }))
+      );
+    } catch (e) {
+      console.error("Failed to load conversations:", e);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    loadConversations();
+  }, [loadConversations]);
+
+  // Auto-save conversation (debounced)
+  const saveConversation = useCallback(
+    async (msgs: Message[], prompt: string | null, convoId: string | null) => {
+      if (!user || msgs.length === 0) return;
+
+      // Generate title from first user message
+      const firstUserMsg = msgs.find((m) => m.role === "user");
+      const title = firstUserMsg
+        ? firstUserMsg.content.slice(0, 60) + (firstUserMsg.content.length > 60 ? "…" : "")
+        : "New Conversation";
+
+      try {
+        if (convoId) {
+          await supabase
+            .from("prompt_conversations")
+            .update({
+              messages: JSON.parse(JSON.stringify(msgs)),
+              final_prompt: prompt,
+              title,
+            })
+            .eq("id", convoId)
+            .eq("user_id", user.id);
+        } else {
+          const { data, error } = await supabase
+            .from("prompt_conversations")
+            .insert([{
+              user_id: user.id,
+              messages: JSON.parse(JSON.stringify(msgs)),
+              final_prompt: prompt,
+              title,
+            }])
+            .select("id")
+            .single();
+
+          if (!error && data) {
+            setActiveConversationId(data.id);
+          }
+        }
+        loadConversations();
+      } catch (e) {
+        console.error("Failed to save conversation:", e);
+      }
+    },
+    [user, loadConversations]
+  );
+
+  const debouncedSave = useCallback(
+    (msgs: Message[], prompt: string | null, convoId: string | null) => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => saveConversation(msgs, prompt, convoId), 1000);
+    },
+    [saveConversation]
+  );
+
   const extractFinalPrompt = (text: string): string | null => {
     const match = text.match(/```FINAL_PROMPT\n([\s\S]*?)```/);
     return match ? match[1].trim() : null;
   };
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+  const handleSend = async (overrideInput?: string) => {
+    const text = overrideInput || input;
+    if (!text.trim() || isLoading) return;
 
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
-      content: input.trim(),
+      content: text.trim(),
     };
 
     const newMessages = [...messages, userMsg];
@@ -73,13 +185,16 @@ const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
         content: result.reply,
       };
 
-      setMessages((prev) => [...prev, assistantMsg]);
+      const updatedMessages = [...newMessages, assistantMsg];
+      setMessages(updatedMessages);
 
-      // Check if final prompt was generated
       const extracted = extractFinalPrompt(result.reply);
       if (extracted) {
         setFinalPrompt(extracted);
       }
+
+      // Auto-save
+      debouncedSave(updatedMessages, extracted || finalPrompt, activeConversationId);
     } catch (e) {
       console.error("Prompt builder error:", e);
       toast.error("Failed to connect to AI assistant");
@@ -102,8 +217,171 @@ const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleNewConversation = () => {
+    setMessages([]);
+    setFinalPrompt(null);
+    setActiveConversationId(null);
+    setShowHistory(false);
+  };
+
+  const handleLoadConversation = (convo: Conversation) => {
+    setMessages(convo.messages);
+    setFinalPrompt(convo.final_prompt);
+    setActiveConversationId(convo.id);
+    setShowHistory(false);
+  };
+
+  const handleDeleteConversation = async (convoId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!user) return;
+    try {
+      await supabase
+        .from("prompt_conversations")
+        .delete()
+        .eq("id", convoId)
+        .eq("user_id", user.id);
+
+      if (activeConversationId === convoId) {
+        handleNewConversation();
+      }
+      loadConversations();
+      toast.success("Conversation deleted");
+    } catch (e) {
+      toast.error("Failed to delete conversation");
+    }
+  };
+
+  const handleStartFromTemplate = (prompt: string) => {
+    handleNewConversation();
+    setTimeout(() => handleSend(prompt), 50);
+  };
+
+  const formatTime = (dateStr: string) => {
+    const d = new Date(dateStr);
+    const now = new Date();
+    const diff = now.getTime() - d.getTime();
+    if (diff < 60000) return "just now";
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+    return d.toLocaleDateString();
+  };
+
+  // History panel overlay
+  if (showHistory) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+          <span className="text-sm font-medium text-foreground">Conversations</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleNewConversation}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-primary/15 text-primary hover:bg-primary/25 transition-colors"
+            >
+              <Plus className="w-3 h-3" />
+              New
+            </button>
+            <button
+              onClick={() => setShowHistory(false)}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Back
+            </button>
+          </div>
+        </div>
+
+        {/* Starter templates */}
+        <div className="px-3 py-2 border-b border-border">
+          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">Start from template</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {STARTER_TEMPLATES.map((t) => (
+              <button
+                key={t.label}
+                onClick={() => handleStartFromTemplate(t.prompt)}
+                className="text-left px-2 py-1.5 rounded border border-border hover:border-primary/30 hover:bg-secondary/50 transition-all text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Saved conversations */}
+        <div className="flex-1 overflow-y-auto scrollbar-thin">
+          {loadingHistory ? (
+            <div className="flex items-center justify-center py-8 text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin" />
+            </div>
+          ) : conversations.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground space-y-2">
+              <MessageSquare className="w-8 h-8 opacity-20" />
+              <p className="text-xs">No saved conversations yet</p>
+            </div>
+          ) : (
+            <div className="p-2 space-y-1">
+              {conversations.map((convo) => (
+                <button
+                  key={convo.id}
+                  onClick={() => handleLoadConversation(convo)}
+                  className={`w-full text-left px-3 py-2 rounded-md transition-colors group ${
+                    activeConversationId === convo.id
+                      ? "bg-primary/10 border border-primary/20"
+                      : "hover:bg-muted border border-transparent"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-foreground truncate">{convo.title}</p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                          <Clock className="w-2.5 h-2.5" />
+                          {formatTime(convo.updated_at)}
+                        </span>
+                        {convo.final_prompt && (
+                          <span className="text-[10px] px-1 py-0.5 rounded bg-success/15 text-success border border-success/20">
+                            Ready
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <button
+                      onClick={(e) => handleDeleteConversation(convo.id, e)}
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded text-muted-foreground hover:text-destructive transition-all"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full relative">
+      {/* Header with history toggle */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
+        <button
+          onClick={() => setShowHistory(true)}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Clock className="w-3.5 h-3.5" />
+          History
+          {conversations.length > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">{conversations.length}</span>
+          )}
+        </button>
+        <button
+          onClick={handleNewConversation}
+          className="flex items-center gap-1 px-2 py-1 rounded text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        >
+          <Plus className="w-3 h-3" />
+          New
+        </button>
+      </div>
+
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
         {messages.length === 0 && (
@@ -115,11 +393,19 @@ const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
             <p className="text-xs max-w-[280px] text-center">
               Tell me what you want to simulate and I'll help you build a detailed, complete prompt for the script generator.
             </p>
-            <div className="space-y-1.5 text-[11px] text-muted-foreground/70 max-w-[260px]">
-              <p>Try something like:</p>
-              <p className="italic">"I want to simulate a beam under load"</p>
-              <p className="italic">"I need a contact analysis for two plates"</p>
-              <p className="italic">"Pressure vessel with internal pressure"</p>
+
+            {/* Quick start templates inline */}
+            <div className="w-full max-w-[300px] space-y-1.5 pt-2">
+              <p className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider text-center">Quick start</p>
+              {STARTER_TEMPLATES.slice(0, 4).map((t) => (
+                <button
+                  key={t.label}
+                  onClick={() => handleStartFromTemplate(t.prompt)}
+                  className="w-full text-left px-3 py-2 rounded-md border border-border hover:border-primary/30 hover:bg-secondary/50 transition-all text-xs text-muted-foreground hover:text-foreground"
+                >
+                  {t.label}
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -193,7 +479,7 @@ const PromptBuilder = ({ onPromptReady }: PromptBuilderProps) => {
             className="flex-1 bg-muted border border-border rounded-md px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 font-sans"
           />
           <button
-            onClick={handleSend}
+            onClick={() => handleSend()}
             disabled={!input.trim() || isLoading}
             className="bg-primary text-primary-foreground rounded-md px-3 py-2 hover:opacity-90 transition-opacity disabled:opacity-40"
           >
