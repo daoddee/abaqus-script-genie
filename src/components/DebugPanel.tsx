@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Bug, Loader2, ChevronRight, AlertTriangle, CheckCircle2, Copy, Check, Shield } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "./ui/collapsible";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 
 const API_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/debug-abaqus-script`;
 
@@ -47,11 +48,18 @@ const DebugPanel = ({ script, onApplyFix }: DebugPanelProps) => {
     setResult(null);
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        toast.error("Please sign in to use the debugger.");
+        setIsDebugging(false);
+        return;
+      }
+
       const resp = await fetch(API_URL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
           script,

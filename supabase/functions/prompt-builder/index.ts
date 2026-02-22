@@ -47,6 +47,27 @@ serve(async (req) => {
   }
 
   try {
+    // ── Authentication check ──
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "Authentication required." }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2.49.1");
+    const authClient = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_PUBLISHABLE_KEY")!
+    );
+    const { data: { user: authUser }, error: authError } = await authClient.auth.getUser(authHeader.replace("Bearer ", ""));
+    if (authError || !authUser) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "Invalid or expired session." }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const { messages } = (await req.json()) as { messages: Message[] };
 
     if (!messages || !Array.isArray(messages)) {
