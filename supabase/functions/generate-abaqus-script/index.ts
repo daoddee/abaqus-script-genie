@@ -1080,6 +1080,54 @@ serve(async (req) => {
       );
     }
 
+    // ── Server-side usage limit enforcement ──
+    const FREE_LIMIT = 3;
+    const serviceClient = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+      { auth: { persistSession: false } }
+    );
+
+    // Check subscription status via Stripe
+    let isSubscribed = false;
+    try {
+      const stripeKey = Deno.env.get("striplivekey");
+      if (stripeKey) {
+        const { default: Stripe } = await import("https://esm.sh/stripe@18.5.0");
+        const stripe = new Stripe(stripeKey, { apiVersion: "2025-08-27.basil" });
+        const customers = await stripe.customers.list({ email: authUser.email!, limit: 1 });
+        if (customers.data.length > 0) {
+          const subs = await stripe.subscriptions.list({
+            customer: customers.data[0].id,
+            status: "all",
+            limit: 10,
+          });
+          isSubscribed = subs.data.some((s) => s.status === "active" || s.status === "trialing");
+        }
+      }
+    } catch (subErr) {
+      console.error("Subscription check failed, defaulting to free tier:", subErr);
+    }
+
+    if (!isSubscribed) {
+      const { count, error: countErr } = await serviceClient
+        .from("generations")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", authUser.id);
+
+      if (!countErr && count !== null && count >= FREE_LIMIT) {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            issues: ["Free generation limit reached. Please upgrade to continue."],
+            trace_id: traceId,
+            limit_reached: true,
+          }),
+          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
     const { prompt, template_id, options = {}, runtime_mode = "py3" } = await req.json();
     if (!prompt || typeof prompt !== "string" || prompt.trim().length < 5) {
       return new Response(
